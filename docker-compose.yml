@@ -1,0 +1,124 @@
+# OAN Sandbox in Docker: PostgreSQL, API and web.
+#
+#   browser --> web (Next.js) :3005 --> api (FastAPI) :8010 --> postgres :5433 (host) / 5432 (network)
+#                                          |
+#                                          +--> existing Kong gateway (GATEWAY_SANDBOX_URL)
+#
+# Kong is NOT part of this stack: the API calls the Kong already deployed for
+# the environment. (For a laptop without one, run a local Kong on its own -
+# see DEPLOYMENT.md.)
+#
+#   cp .env.example .env      # passwords, secrets, public URLs, GATEWAY_SANDBOX_URL
+#   docker compose up -d --build
+#
+# On the first start PostgreSQL loads deployment/postgres/initdb/*.sql.gz (the
+# sandbox data: catalogue, masters, CMS, accounts); the api container then
+# applies any newer migrations. See DEPLOYMENT.md.
+name: oan-sandbox
+
+services:
+  postgres:
+    # Same major version as the source database the init dump was taken from.
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      POSTGRES_DB: ${DB_NAME:-sandbox_db_oan}
+    volumes:
+      # PostgreSQL 18 images keep their data under /var/lib/postgresql/18/...
+      - oan_pgdata:/var/lib/postgresql
+      # Runs only when the data volume is empty (first start). Point
+      # POSTGRES_INITDB_DIR at ./deployment/postgres/empty for a clean database.
+      - ${POSTGRES_INITDB_DIR:-./deployment/postgres/initdb}:/docker-entrypoint-initdb.d:ro
+    ports:
+      # Loopback only by default; set POSTGRES_BIND=0.0.0.0 to reach it from other hosts.
+      - "${POSTGRES_BIND:-127.0.0.1}:${POSTGRES_HOST_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/sandbox-api/Dockerfile
+    image: ${IMAGE_PREFIX:-oan-sandbox}-api:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      ENV: ${APP_ENV:-sandbox}
+      # true exposes Swagger at /docs; keep false on shared servers.
+      DEBUG: ${API_DEBUG:-false}
+      DEFAULT_COUNTRY_CODE: ${DEFAULT_COUNTRY_CODE:-ET}
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      DB_NAME: ${DB_NAME:-sandbox_db_oan}
+      JWT_ACCESS_TOKEN_KEY: ${JWT_ACCESS_TOKEN_KEY:?set JWT_ACCESS_TOKEN_KEY in .env}
+      JWT_REFRESH_TOKEN_KEY: ${JWT_REFRESH_TOKEN_KEY:?set JWT_REFRESH_TOKEN_KEY in .env}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3005}
+      PORTAL_URL: ${PORTAL_URL:-http://localhost:3005}
+      UPLOAD_DIR: /app/uploads
+      LOG_DIR: /app/logs
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      MAIL_ENABLED: ${MAIL_ENABLED:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-no-reply@openagrinet.org}
+      SMTP_TLS: ${SMTP_TLS:-true}
+      # Sign-up code used while mail is off (see .env.example).
+      DEV_FIXED_OTP: ${DEV_FIXED_OTP-000000}
+      GATEWAY_ENABLED: ${GATEWAY_ENABLED:-true}
+      # The Kong proxy already deployed for this environment (not started here).
+      GATEWAY_SANDBOX_URL: ${GATEWAY_SANDBOX_URL:?set GATEWAY_SANDBOX_URL to the deployed Kong proxy URL in .env}
+      GATEWAY_UAT_URL: ${GATEWAY_UAT_URL:-}
+      GATEWAY_PROD_URL: ${GATEWAY_PROD_URL:-}
+      # Only needed for an empty database (see DEPLOYMENT.md, "Start from a clean database").
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@openagrinet.org}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
+      LOAD_DEMO_CATALOGUE: ${LOAD_DEMO_CATALOGUE:-false}
+      A2C_SPEC_PATH: /a2c/openapi_v1.public.yaml
+    volumes:
+      - oan_uploads:/app/uploads
+      - oan_api_logs:/app/logs
+      # Only the A2C OpenAPI file, read by LOAD_DEMO_CATALOGUE; no Kong runs from it.
+      - ./deployment/a2c:/a2c:ro
+    extra_hosts:
+      # Lets GATEWAY_SANDBOX_URL point at a Kong on the Docker host
+      # (http://host.docker.internal:8100) when testing on a laptop.
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${API_HOST_PORT:-8010}:8000"
+
+  web:
+    build:
+      context: ./ui
+      args:
+        # The browser calls this URL, so it must be reachable from users' machines.
+        NEXT_PUBLIC_API_BASE_URL: ${PUBLIC_API_URL:-http://localhost:8010/oan}
+        NEXT_PUBLIC_DEFAULT_COUNTRY: ${DEFAULT_COUNTRY_CODE:-ET}
+        NEXT_PUBLIC_SITE_NAME: ${SITE_NAME:-Open Agri Net}
+    image: ${IMAGE_PREFIX:-oan-sandbox}-web:${IMAGE_TAG:-latest}
+    environment:
+      # The Next.js server renders public pages (catalogue, FAQs, home) and must
+      # reach the API over the Docker network, not the browser URL above.
+      API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:8000/oan}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_HOST_PORT:-3005}:3000"
+
+volumes:
+  oan_pgdata:
+  oan_uploads:
+  oan_api_logs:

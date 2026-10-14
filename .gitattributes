@@ -1,0 +1,9 @@
+# Normalise line endings; shell scripts run inside Linux containers.
+* text=auto
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.gz binary
+*.png binary
+*.jpg binary
+*.webp binary
+*.ico binary

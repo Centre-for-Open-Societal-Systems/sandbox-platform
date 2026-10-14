@@ -1,0 +1,162 @@
+@import "tailwindcss";
+
+/*
+ * OAN palette. Deep green reads as agricultural without the clip-art
+ * connotation of brighter greens, and holds up against the amber used for
+ * pending/attention states.
+ */
+@theme {
+  /* Green scale shared with the ETP registry portal admin template. */
+  --color-brand-50: #f1f8f1;
+  --color-brand-100: #eef6ee;
+  --color-brand-200: #cfe6d2;
+  --color-brand-300: #a3d0a9;
+  --color-brand-400: #6bb173;
+  --color-brand-500: #2e7d34;
+  --color-brand-600: #256428;
+  --color-brand-700: #1e4a2b;
+  --color-brand-800: #1c4a2a;
+  --color-brand-900: #14532d;
+
+  /* Named template tokens used by the admin console. */
+  --color-brand-deep: #14532d;
+  --color-brand-bright: #2e7d34;
+  --color-brand-gold: #e0a53a;
+  --color-nav-active: #3c850c;
+  --color-action: #005a36;
+  --color-action-hover: #00432a;
+  --color-ink: #14202b;
+  --color-subtle: #6b7280;
+  --color-hairline: #e5e7eb;
+  --color-surface-soft: #f1f8f1;
+  --color-sidebar-bg: #f1f9f2;
+  --color-sidebar-line: #e2ede2;
+  --color-table-head: #e3fff4;
+  --color-btn-outline: #053e27;
+
+  --color-accent-400: oklch(0.78 0.15 70);
+  --color-accent-500: oklch(0.70 0.16 65);
+  --color-accent-600: oklch(0.60 0.15 60);
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, monospace;
+}
+
+:root {
+  --background: oklch(0.99 0.002 150);
+  --foreground: oklch(0.21 0.01 150);
+  --muted: oklch(0.96 0.004 150);
+  --muted-foreground: oklch(0.52 0.01 150);
+  --card: oklch(1 0 0);
+  --border: oklch(0.91 0.005 150);
+  --input: oklch(0.91 0.005 150);
+  --ring: var(--color-brand-500);
+  --destructive: oklch(0.58 0.20 27);
+  --radius: 0.6rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --background: oklch(0.17 0.01 150);
+    --foreground: oklch(0.95 0.005 150);
+    --muted: oklch(0.24 0.01 150);
+    --muted-foreground: oklch(0.68 0.01 150);
+    --card: oklch(0.21 0.01 150);
+    --border: oklch(0.30 0.01 150);
+    --input: oklch(0.30 0.01 150);
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-card: var(--card);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-destructive: var(--destructive);
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 0.2rem);
+  --radius-sm: calc(var(--radius) - 0.3rem);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Keyboard focus stays visible; pointer focus does not add a ring. */
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
+}
+
+/* The admin console follows the template: light only, Roboto. */
+.admin-console {
+  font-family: var(--font-roboto), ui-sans-serif, system-ui, sans-serif;
+  color: var(--color-ink);
+  accent-color: var(--color-brand-bright);
+}
+
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+  }
+
+  /* Wide content scrolls inside its own container rather than the page. */
+  .table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* ---------------------------------------------------------------- toasts */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-12px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes toast-out {
+  to {
+    opacity: 0;
+    transform: translateX(24px) scale(0.96);
+  }
+}
+
+@keyframes toast-progress {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast-motion {
+    animation-name: none !important;
+  }
+}
