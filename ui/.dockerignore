@@ -1,0 +1,12 @@
+# Local-only files never go into the image.
+node_modules/
+.next/
+logs/
+.env
+.env.*
+npm-debug.log*
+tsconfig.tsbuildinfo
+.vscode/
+.idea/
+Dockerfile
+.dockerignore
