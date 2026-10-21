@@ -2,11 +2,11 @@
 #
 #   browser --> web (Next.js) :3005 --> api (FastAPI) :8010 --> postgres :5433 (host) / 5432 (network)
 #                                          |
-#                                          +--> existing Kong gateway (GATEWAY_SANDBOX_URL)
+#                                          +--> existing APISIX gateway (GATEWAY_SANDBOX_URL)
 #
-# Kong is NOT part of this stack: the API calls the Kong already deployed for
-# the environment. (For a laptop without one, run a local Kong on its own -
-# see DEPLOYMENT.md.)
+# The API gateway is NOT part of this stack: the API calls the Apache APISIX
+# already deployed for the environment. (For a laptop without one, run a local
+# gateway on its own - see DEPLOYMENT.md.)
 #
 #   cp .env.example .env      # passwords, secrets, public URLs, GATEWAY_SANDBOX_URL
 #   docker compose up -d --build
@@ -74,8 +74,8 @@ services:
       # Sign-up code used while mail is off (see .env.example).
       DEV_FIXED_OTP: ${DEV_FIXED_OTP-000000}
       GATEWAY_ENABLED: ${GATEWAY_ENABLED:-true}
-      # The Kong proxy already deployed for this environment (not started here).
-      GATEWAY_SANDBOX_URL: ${GATEWAY_SANDBOX_URL:?set GATEWAY_SANDBOX_URL to the deployed Kong proxy URL in .env}
+      # The APISIX proxy already deployed for this environment (not started here).
+      GATEWAY_SANDBOX_URL: ${GATEWAY_SANDBOX_URL:?set GATEWAY_SANDBOX_URL to the deployed APISIX proxy URL in .env}
       GATEWAY_UAT_URL: ${GATEWAY_UAT_URL:-}
       GATEWAY_PROD_URL: ${GATEWAY_PROD_URL:-}
       # Only needed for an empty database (see DEPLOYMENT.md, "Start from a clean database").
@@ -86,11 +86,11 @@ services:
     volumes:
       - oan_uploads:/app/uploads
       - oan_api_logs:/app/logs
-      # Only the A2C OpenAPI file, read by LOAD_DEMO_CATALOGUE; no Kong runs from it.
+      # Only the A2C OpenAPI file, read by LOAD_DEMO_CATALOGUE; no gateway runs from it.
       - ./deployment/a2c:/a2c:ro
     extra_hosts:
-      # Lets GATEWAY_SANDBOX_URL point at a Kong on the Docker host
-      # (http://host.docker.internal:8100) when testing on a laptop.
+      # Lets GATEWAY_SANDBOX_URL point at a gateway on the Docker host
+      # (e.g. http://host.docker.internal:9080) when testing on a laptop.
       - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
