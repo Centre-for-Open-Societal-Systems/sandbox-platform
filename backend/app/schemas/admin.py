@@ -198,12 +198,34 @@ class DashboardSeriesPoint(BaseModel):
     value: int
 
 
+class DashboardApiHealth(BaseModel):
+    """Sandbox traffic quality over the dashboard trend window."""
+
+    total_calls: int = 0
+    success: int = 0
+    client_errors: int = 0
+    #: 5xx responses plus calls that got no response at all.
+    server_errors: int = 0
+    success_rate: float | None = None
+    avg_latency_ms: float | None = None
+
+
+class DashboardEndpointStat(BaseModel):
+    method: str | None = None
+    endpoint_url: str
+    product_name: str | None = None
+    calls: int
+    success_rate: float | None = None
+    avg_latency_ms: float | None = None
+
+
 class DashboardResponse(BaseModel):
     counters: DashboardCounters
+    trend_days: int
     registrations_trend: list[DashboardSeriesPoint] = Field(default_factory=list)
     api_usage_trend: list[DashboardSeriesPoint] = Field(default_factory=list)
-    participants_by_area: list[DashboardSeriesPoint] = Field(default_factory=list)
-    top_endpoints: list[DashboardSeriesPoint] = Field(default_factory=list)
+    api_health: DashboardApiHealth = Field(default_factory=DashboardApiHealth)
+    top_endpoints: list[DashboardEndpointStat] = Field(default_factory=list)
 
 
 PermissionNode.model_rebuild()

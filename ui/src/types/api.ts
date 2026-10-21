@@ -121,12 +121,32 @@ export interface SeriesPoint {
   value: number;
 }
 
+export interface DashboardApiHealth {
+  total_calls: number;
+  success: number;
+  client_errors: number;
+  /** 5xx responses plus calls that got no response. */
+  server_errors: number;
+  success_rate: number | null;
+  avg_latency_ms: number | null;
+}
+
+export interface DashboardEndpointStat {
+  method: string | null;
+  endpoint_url: string;
+  product_name: string | null;
+  calls: number;
+  success_rate: number | null;
+  avg_latency_ms: number | null;
+}
+
 export interface AdminDashboard {
   counters: DashboardCounters;
+  trend_days: number;
   registrations_trend: SeriesPoint[];
   api_usage_trend: SeriesPoint[];
-  participants_by_area: SeriesPoint[];
-  top_endpoints: SeriesPoint[];
+  api_health: DashboardApiHealth;
+  top_endpoints: DashboardEndpointStat[];
 }
 
 // ------------------------------------------------------------------- user

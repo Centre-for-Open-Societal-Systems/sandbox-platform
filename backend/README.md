@@ -164,23 +164,25 @@ Details and Proxy Info screens. The importer:
 - samples the first non-null `anyOf`/`oneOf` alternative;
 - uses schema defaults.
 
-## Kong gateway — planned, not built
+## APISIX gateway — admin integration planned, not built
 
-All OAN data APIs are published through Kong. **Nothing is implemented yet:**
-`GATEWAY_ENABLED` and `GATEWAY_ADMIN_TOKEN` are read nowhere.
+All OAN data APIs are published through the Apache APISIX gateway. Try-it already routes
+gateway products through its proxy (`GATEWAY_ENABLED`, `GATEWAY_*_URL`, in
+`services/sandbox_service.py`); nothing gateway-specific is used there. **The Admin API
+integration is not implemented yet:** `GATEWAY_ADMIN_TOKEN` is read nowhere.
 
 | Part | Plan |
 | --- | --- |
-| Clients | `app/integrations/kong/`: an Admin API client (consumers, key-auth/JWT/OAuth2 credentials, ACL groups, rate-limit plugin, services/routes listing) and a pooled proxy client |
+| Clients | `app/integrations/apisix/`: an Admin API client (consumers, `key-auth` / `jwt-auth` credentials, consumer groups for `consumer-restriction`, `limit-count`, routes listing) and a pooled proxy client |
 | Data | `gateway_consumer` and `gateway_credential` tables, one per participant and environment, with secrets encrypted |
 | Lifecycle | Provision on SANDBOX/UAT/PROD approval; revoke on reject, disable or delete |
-| Try-it | Calls go through the Kong proxy with the participant's credential injected server-side; `apikey` is redacted in logs |
-| Catalogue | A "Sync from Kong" import of services and routes |
-| History | A `POST /oan/gateway/kong/logs` receiver for Kong's `http-log` plugin, so API history shows real traffic |
-| Settings | `KONG_*` settings per environment |
+| Try-it | Calls go through the APISIX proxy with the participant's credential injected server-side; `apikey` is redacted in logs |
+| Catalogue | A "Sync from APISIX" import of routes |
+| History | A `POST /oan/gateway/apisix/logs` receiver for APISIX's `http-logger` plugin, so API history shows real traffic |
+| Settings | Admin API URL and key per environment |
 
-The open questions (Kong flavour, auth plugin, per-environment gateways, Admin
-URL/token) are listed in the root README under *Project status*.
+The open questions (auth plugin, per-environment gateways, Admin URL/key) are listed in the
+root README under *Project status*.
 ## Integration seams
 
 These are deliberately isolated so a member country can plug in its own

@@ -6,7 +6,7 @@ installed on the host except Docker Engine 24+ with Compose v2.
 ```
 browser ──> web (Next.js)  :3005 ──> api (FastAPI) :8010 ──> postgres :5432 (inside the network)
                                          │
-                                         └──> existing Kong gateway  (GATEWAY_SANDBOX_URL)
+                                         └──> existing APISIX gateway  (GATEWAY_SANDBOX_URL)
 ```
 
 | Service | Image | Host port (default) | Purpose |
@@ -15,10 +15,10 @@ browser ──> web (Next.js)  :3005 ──> api (FastAPI) :8010 ──> postgre
 | `api` | built from `docker/sandbox-api/Dockerfile` (context: repo root) | `8010` | Sandbox API (`/oan/...`, health `/oan/health`) |
 | `postgres` | `postgres:18-alpine` | `127.0.0.1:5433` | Database `sandbox_db_oan` |
 
-**Kong is not part of this stack.** The API calls the Kong gateway already deployed for the
-environment (dev, staging and so on) at `GATEWAY_SANDBOX_URL`, the same gateway the sandbox
-already uses. The stack will not start until that URL is set. Redis is not included either:
-the API does not use it (only Kong did).
+**The API gateway is not part of this stack.** The API calls the Apache APISIX gateway already
+deployed for the environment (dev, staging and so on) at `GATEWAY_SANDBOX_URL`. The stack will
+not start until that URL is set. Redis is not included either: the API does not use it (only
+the gateway's rate limiting does).
 
 ## 1. First start
 
@@ -28,7 +28,7 @@ cp .env.example .env
 #   set DB_PASSWORD, JWT_ACCESS_TOKEN_KEY, JWT_REFRESH_TOKEN_KEY
 #   (python -c "import secrets; print(secrets.token_urlsafe(48))")
 #   set PUBLIC_API_URL / ALLOWED_ORIGINS / PORTAL_URL to the public addresses
-#   set GATEWAY_SANDBOX_URL to the existing Kong proxy URL of this environment
+#   set GATEWAY_SANDBOX_URL to the existing APISIX proxy URL of this environment
 docker compose up -d --build
 docker compose ps          # postgres, api and web all "(healthy)"
 ```
@@ -85,8 +85,8 @@ the volume first (this deletes the data): `docker compose down -v`.
 | `POSTGRES_HOST_PORT`, `POSTGRES_BIND` | `5433`, `127.0.0.1` | DB port on the host; loopback only by default |
 | `API_DEBUG` | `false` | `true` exposes Swagger at `/docs` |
 | `MAIL_ENABLED`, `SMTP_*` | off | Needed for sign-up codes, reset links and query replies to be emailed |
-| `GATEWAY_SANDBOX_URL` | — (required) | Proxy URL of the **existing** Kong for this environment; try-it calls for gateway products go here |
-| `GATEWAY_ENABLED` | `true` | Route products flagged "Served through the API gateway" via Kong |
+| `GATEWAY_SANDBOX_URL` | — (required) | Proxy URL of the **existing** APISIX for this environment; try-it calls for gateway products go here |
+| `GATEWAY_ENABLED` | `true` | Route products flagged "Served through the API gateway" via APISIX |
 | `GATEWAY_UAT_URL`, `GATEWAY_PROD_URL` | empty | External UAT/production gateways when they exist |
 | `POSTGRES_INITDB_DIR` | `./deployment/postgres/initdb` | `./deployment/postgres/empty` for a clean database |
 | `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD`, `LOAD_DEMO_CATALOGUE` | —, —, `false` | Clean-database mode |
@@ -153,23 +153,39 @@ pg_dump -h localhost -U postgres -d sandbox_db_oan --no-owner --no-privileges \
 gzip -9 -f deployment/postgres/initdb/01-oan-sandbox-data.sql
 ```
 
-## 7. API gateway (existing Kong)
+## 7. API gateway (existing APISIX)
 
-The sandbox does not run Kong. Set `GATEWAY_SANDBOX_URL` to the proxy of the Kong already
-deployed for the environment, e.g. `https://kong-dev.example.org`; set `GATEWAY_UAT_URL` and
-`GATEWAY_PROD_URL` when those gateways exist. The API container must be able to reach that URL.
+The sandbox does not run the gateway. Set `GATEWAY_SANDBOX_URL` to the proxy (not the Admin
+API) of the Apache APISIX already deployed for the environment, e.g.
+`https://apisix-dev.example.org`; set `GATEWAY_UAT_URL` and `GATEWAY_PROD_URL` when those
+gateways exist. The API container must be able to reach that URL.
 
-Products flagged **Served through the API gateway** (the A2C products) are called on that URL.
-The init step `deployment/postgres/initdb/02-use-deployed-gateway.sql` clears end-point URLs copied
-from a developer machine (`localhost`, `kong`), so every gateway call uses the configured Kong.
+Products flagged **Served through the API gateway** (the A2C products) are called on that URL:
+the gateway URL plus the end-point path, with the headers the participant entered
+(`Authorization`, `apikey`). The sandbox uses nothing gateway-specific, so no code or image
+change is tied to the gateway product. The init step
+`deployment/postgres/initdb/02-use-deployed-gateway.sql` clears end-point URLs copied from a
+developer machine (`localhost`, `kong`), so every gateway call uses the configured gateway.
 
-**Laptop test.** Use the same Kong the local sandbox already uses: start the separate local
-`kong-gateway` stack on its own (not part of this repository; proxy on port 8100), then set
-`GATEWAY_SANDBOX_URL=http://host.docker.internal:8100` (`localhost` inside a container is the
-container itself). That folder is a local test tool only; it is not deployed with the sandbox.
+What the APISIX deployment must provide for the A2C products:
 
-Kong's A2C login rate limit is 5 per minute per IP, and every try-it call reaches Kong from the
-API container, so participants share that budget.
+| Need | APISIX | Notes |
+| --- | --- | --- |
+| Routes | one route per A2C path, upstream = the A2C service | Paths must match the catalogue end-points |
+| JWT | `jwt-auth`, consumer key = `oan_a2c_identity_gateway`, `key_claim_name: iss`, RS256 public key of A2C | APISIX looks for a `key` claim by default; A2C tokens carry the consumer in `iss` |
+| API keys | `key-auth`, header `apikey` | Webhooks and dashboards |
+| Consumer groups | `consumer-restriction` | Same groups as the A2C spec |
+| IP allow-lists | `ip-restriction` | |
+| Rate limits | `limit-count` (Redis policy when several APISIX nodes run) | A2C login: 5 per minute per IP |
+
+**Laptop test.** Run a gateway on the Docker host and set
+`GATEWAY_SANDBOX_URL=http://host.docker.internal:<proxy port>` (APISIX listens on `9080` by
+default; the separate local test stack used so far listens on `8100`). `localhost` inside a
+container is the container itself. Local gateway stacks are test tools only; they are not
+deployed with the sandbox.
+
+The A2C login rate limit is per IP, and every try-it call reaches the gateway from the API
+container, so participants share that budget.
 
 ## 8. Notes
 

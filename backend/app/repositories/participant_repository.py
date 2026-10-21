@@ -198,24 +198,6 @@ class ParticipantRepository(BaseRepository[Participant]):
             stmt = stmt.where(Participant.country_code == country_code)
         return list(self.db.execute(stmt).all())
 
-    def counts_by_area(self, country_code: str | None = None, limit: int = 15):
-        stmt = (
-            select(
-                Participant.admin_area_code_l1.label("label"),
-                func.count().label("value"),
-            )
-            .where(
-                Participant.is_deleted.is_(False),
-                Participant.admin_area_code_l1.is_not(None),
-            )
-            .group_by(Participant.admin_area_code_l1)
-            .order_by(func.count().desc())
-            .limit(limit)
-        )
-        if country_code:
-            stmt = stmt.where(Participant.country_code == country_code)
-        return list(self.db.execute(stmt).all())
-
 
 class ParticipantTokenRepository(BaseRepository[ParticipantToken]):
     model = ParticipantToken

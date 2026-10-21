@@ -3,8 +3,8 @@
 Developer sandbox for **Open Agri Net (OAN)**: a public site with the API catalogue, a
 participant portal (sign-up, environment access, try-it console, API history, support) and an
 admin console (participants, products and end-points, CMS, masters, queries). Try-it calls are
-answered from published samples (mock mode) or routed through the Kong API gateway of the
-environment.
+answered from published samples (mock mode) or routed through the API gateway (Apache APISIX)
+of the environment.
 
 ## Repository layout
 
@@ -28,7 +28,7 @@ sandbox-platform/
 │   ├── postgres/empty/      use instead for a clean database
 │   └── a2c/                 A2C OpenAPI spec read by the demo catalogue loader
 ├── .github/workflows/ci.yml backend lint + tests, UI typecheck/lint/build, image builds
-├── docker-compose.yml       postgres + api + web (Kong is external)
+├── docker-compose.yml       postgres + api + web (the APISIX gateway is external)
 ├── .env.example             settings for docker compose
 └── DEPLOYMENT.md            Docker deployment guide
 ```
@@ -59,7 +59,7 @@ with the same names (there is no Helm chart in this repository).
 | Images | Two images, built from this repo (CI builds them on every push but does not publish them). `api`: `docker build -f docker/sandbox-api/Dockerfile -t <registry>/oan-sandbox-api:<tag> .` (listens on `8000`). `web`: `docker build -t <registry>/oan-sandbox-web:<tag> --build-arg NEXT_PUBLIC_API_BASE_URL=<public API URL> ui` (listens on `3000`). Or `IMAGE_PREFIX=<registry>/oan-sandbox IMAGE_TAG=<tag> docker compose build api web`. |
 | One `web` image per environment | The browser API URL (`PUBLIC_API_URL` / `NEXT_PUBLIC_API_BASE_URL`) is built into the `web` image. Build and tag a `web` image per environment; the `api` image is the same everywhere. |
 | PostgreSQL | Included in the stack (`postgres:18-alpine`, database `sandbox_db_oan`, volume `oan_pgdata`). For a managed database, remove the `postgres` service and point `DB_HOST` / `DB_PORT` at it (PostgreSQL 18, to match the snapshot). |
-| Kong gateway | **Not part of this stack.** The environment's existing Kong must be deployed with the A2C routes and plugins (`jwt`, `key-auth`, `acl`, rate limiting) and be reachable from the `api` container. Its proxy URL is `GATEWAY_SANDBOX_URL`; the stack refuses to start without it. No Redis is needed (only Kong used it). |
+| API gateway (APISIX) | **Not part of this stack.** The environment's existing Apache APISIX must be deployed with the A2C routes and plugins and be reachable from the `api` container. Its proxy URL is `GATEWAY_SANDBOX_URL`; the stack refuses to start without it. Plugins: `jwt-auth` with `key_claim_name: iss` (A2C tokens are RS256, identified by `iss` = `oan_a2c_identity_gateway`; with the default `key` claim every token is `401`), `key-auth` on the `apikey` header, `consumer-restriction` (consumer groups), `ip-restriction`, `limit-count`. Route paths must match the catalogue end-point paths. The sandbox needs no Redis or etcd of its own (only the gateway uses them). |
 | Public host names | One for the web app (e.g. `https://sandbox.<domain>`) and one for the API (e.g. `https://api.<domain>/oan`, or the same host under `/oan`), with TLS on a reverse proxy or load balancer. |
 | SMTP | An SMTP account for sign-up codes, password-reset links, invitations and query replies. Without it, codes and links only appear in the API log. |
 | Database start mode | **Snapshot** (default): the first start loads `deployment/postgres/initdb` (catalogue, masters, CMS, development accounts). **Clean**: `POSTGRES_INITDB_DIR=./deployment/postgres/empty` + `SEED_ADMIN_PASSWORD` (schema, admin, masters, CMS only). Use clean for production. Either applies only to an **empty** volume. |
@@ -82,7 +82,7 @@ with the same names (there is no Helm chart in this repository).
 |---|---|---|
 | `DB_PASSWORD` | *(Secret)* | PostgreSQL password. |
 | `JWT_ACCESS_TOKEN_KEY`, `JWT_REFRESH_TOKEN_KEY` | *(Secret)* | Two different long random values: `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Changing them logs everyone out. |
-| `GATEWAY_SANDBOX_URL` | `https://kong-dev.<domain>` | Proxy URL of the environment's existing Kong. Try-it calls for gateway products (A2C) go here. |
+| `GATEWAY_SANDBOX_URL` | `https://apisix-dev.<domain>` | Proxy URL of the environment's existing APISIX (not the Admin API). Try-it calls for gateway products (A2C) go here. |
 
 **Per environment** (defaults are for a laptop):
 
@@ -149,9 +149,11 @@ migration step.
    remove `SEED_ADMIN_PASSWORD` from `.env` after the first start.
 4. Sign up a test participant: the code arrives by email (mail on). Approve the participant
    and give it sandbox access in the console.
-5. Try-it for a gateway product (A2C) reaches Kong: the API log shows the call to
-   `GATEWAY_SANDBOX_URL` and Kong answers (a `401` without credentials still proves the route).
-   A connection error means the `api` container cannot reach Kong.
+5. Try-it for a gateway product (A2C) reaches APISIX: the API log shows the call to
+   `GATEWAY_SANDBOX_URL` and APISIX answers (a `401` without credentials still proves the
+   route; a valid A2C token gives `200`, a `401` with one means `jwt-auth` is not keyed on
+   `iss`). A `404` means no matching route; a connection error means the `api` container
+   cannot reach APISIX.
 6. Password reset email links point at `PORTAL_URL`.
 7. Schedule backups of `oan_pgdata` and `oan_uploads`; ship `oan_api_logs` to the log store.
 
