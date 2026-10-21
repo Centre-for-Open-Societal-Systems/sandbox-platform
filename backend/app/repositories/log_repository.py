@@ -5,8 +5,9 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, or_, select
 
+from app.models.catalog import Product
 from app.models.logs import ApiLog, SandboxLog, UserActionLog
 from app.repositories.base import BaseRepository
 
@@ -92,6 +93,52 @@ class ApiLogRepository(BaseRepository[ApiLog]):
         )
         if participant_id:
             stmt = stmt.where(ApiLog.participant_id == participant_id)
+        return list(self.db.execute(stmt).all())
+
+    def health_since(self, since: datetime) -> dict[str, Any]:
+        """Status-class breakdown and mean latency; no status counts as a server error."""
+        status = ApiLog.status_code
+        stmt = select(
+            func.count().label("total"),
+            func.count().filter(status.between(200, 399)).label("success"),
+            func.count().filter(status.between(400, 499)).label("client_errors"),
+            func.count()
+            .filter(or_(status.is_(None), status >= 500, status < 200))
+            .label("server_errors"),
+            func.avg(ApiLog.latency_ms).label("avg_latency_ms"),
+        ).where(ApiLog.log_timestamp >= since)
+        row = self.db.execute(stmt).one()
+        return {
+            "total_calls": int(row.total or 0),
+            "success": int(row.success or 0),
+            "client_errors": int(row.client_errors or 0),
+            "server_errors": int(row.server_errors or 0),
+            "avg_latency_ms": round(float(row.avg_latency_ms), 1)
+            if row.avg_latency_ms is not None
+            else None,
+        }
+
+    def endpoint_stats(self, since: datetime, limit: int = 10):
+        """Most-called end-points with their product, success count and mean latency."""
+        calls = func.count().label("calls")
+        stmt = (
+            select(
+                ApiLog.method,
+                ApiLog.endpoint_url,
+                func.max(Product.display_name).label("display_name"),
+                func.max(Product.product_name).label("product_name"),
+                calls,
+                func.count()
+                .filter(ApiLog.status_code.between(200, 399))
+                .label("success"),
+                func.avg(ApiLog.latency_ms).label("avg_latency_ms"),
+            )
+            .outerjoin(Product, Product.product_id == ApiLog.product_id)
+            .where(ApiLog.log_timestamp >= since, ApiLog.endpoint_url.is_not(None))
+            .group_by(ApiLog.method, ApiLog.endpoint_url)
+            .order_by(calls.desc(), ApiLog.endpoint_url)
+            .limit(limit)
+        )
         return list(self.db.execute(stmt).all())
 
     def record(self, **values: Any) -> ApiLog:
