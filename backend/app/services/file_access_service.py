@@ -11,14 +11,10 @@ from __future__ import annotations
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import ForbiddenError, UnauthorizedError
-from app.core.security import decode_token
+from app.core.deps import get_current_admin, get_current_participant
+from app.core.exceptions import AppError, ForbiddenError, UnauthorizedError
+from app.core.permissions import Permission
 from app.models.participant import Participant, ParticipantRequestInfo
-from app.repositories.admin_repository import AdminTokenRepository, AdminUserRepository
-from app.repositories.participant_repository import (
-    ParticipantRepository,
-    ParticipantTokenRepository,
-)
 
 
 def assert_can_read(
@@ -26,20 +22,20 @@ def assert_can_read(
 ) -> None:
     if not access_token or not auth_key:
         raise UnauthorizedError("Sign in to view this document.")
-    decode_token(access_token)  # raises when invalid or expired
 
-    admin_token = AdminTokenRepository(db).get_active(auth_key)
-    if admin_token is not None:
-        admin = AdminUserRepository(db).get(admin_token.admin_id)
-        if admin is not None and (admin.is_master or admin.is_enabled):
+    # The same checks as every other admin / participant route (token kind,
+    # session owner, expiry, blocked account).
+    try:
+        admin = get_current_admin(db, access_token, auth_key)
+    except AppError:
+        admin = None
+    if admin is not None:
+        if admin.can(Permission.ALL_PARTICIPANTS):
             return
-        raise UnauthorizedError("Session is expired or invalid.")
+        raise ForbiddenError("You do not have access to this document.")
 
-    participant_token = ParticipantTokenRepository(db).get_active(auth_key)
-    if participant_token is None:
-        raise UnauthorizedError("Session is expired or invalid.")
-    participant = ParticipantRepository(db).get(participant_token.participant_id)
-    if participant is None or not _owns(db, participant, file_path):
+    participant = get_current_participant(db, access_token, auth_key).participant
+    if not _owns(db, participant, file_path):
         raise ForbiddenError("You do not have access to this document.")
 
 

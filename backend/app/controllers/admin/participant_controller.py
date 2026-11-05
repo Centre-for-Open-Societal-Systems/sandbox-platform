@@ -43,7 +43,7 @@ from app.schemas.participant import (
     QueryRespondRequest,
     RejectRequest,
 )
-from app.services import audit_service, participant_service
+from app.services import audit_service, iam_user_service, participant_service
 from app.services.audit_service import Action
 
 router = APIRouter(prefix="/participants", tags=["Admin / Participants"])
@@ -170,3 +170,15 @@ def respond_to_query(
         db, admin, payload.query_id, payload.response, payload.status
     )
     return ok("Response sent successfully.")
+
+
+@router.get("/{participant_id}/iam-account")
+def iam_account(participant_id: int, admin: ManageUsers, db: DbSession):
+    """The participant's Keycloak user and roles."""
+    return ok("Account loaded.", iam_user_service.admin_account(db, participant_id))
+
+
+@router.post("/{participant_id}/iam-account/retry")
+def retry_iam_account(participant_id: int, admin: ManageUsers, db: DbSession):
+    """Sync the participant's Keycloak user again (after a failure)."""
+    return ok("Keycloak sync re-run.", iam_user_service.retry(db, admin, participant_id))

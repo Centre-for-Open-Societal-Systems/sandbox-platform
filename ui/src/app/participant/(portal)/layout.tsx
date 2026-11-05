@@ -21,6 +21,7 @@ import { SiteFooter, type FooterSection } from "@/components/layout/site-footer"
 import { useToast } from "@/components/ui/toast";
 import { config } from "@/lib/config";
 import { participantApi } from "@/lib/services/participant";
+import { useEnvironments } from "@/hooks/use-environments";
 import { useHydrated } from "@/hooks/use-hydrated";
 import { participantSession } from "@/lib/session";
 import { cn, initials } from "@/lib/utils";
@@ -35,6 +36,7 @@ const NAV_ITEMS = [
     // Product pages, API documentation and the sandbox test page belong here too.
     match: ["/participant/catalog", "/participant/our-product", "/participant/product/"],
   },
+  { href: "/participant/apps", label: "My Apps", icon: KeyRound },
   { href: "/participant/api-history", label: "API History", icon: ScrollText },
 ];
 
@@ -44,6 +46,7 @@ const FOOTER_SECTIONS: FooterSection[] = [
     links: [
       { href: "/participant/dashboard", label: "Dashboard" },
       { href: "/participant/catalog", label: "API Catalogue" },
+      { href: "/participant/apps", label: "My Apps" },
       { href: "/participant/api-history", label: "API History" },
     ],
   },
@@ -71,7 +74,7 @@ function isNavActive(pathname: string, item: { href: string; match?: string[] })
   return (item.match ?? [item.href]).some((prefix) => pathname.startsWith(prefix));
 }
 
-const ENVIRONMENT_ORDER = ["PRODUCTION", "UAT", "SANDBOX"];
+const ENVIRONMENT_ORDER = ["PRODUCTION", "UAT"];
 
 /** The highest environment the participant can call, shown next to the avatar. */
 function currentEnvironment(environments: string[]): string | null {
@@ -90,6 +93,7 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
     [hydrated],
   );
   const [mobileOpen, setMobileOpen] = React.useState(false);
+  const environments = useEnvironments();
 
   React.useEffect(() => {
     if (hydrated && !session) {
@@ -112,7 +116,7 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
     return null;
   }
 
-  const environment = currentEnvironment(session.environments);
+  const environment = currentEnvironment(environments);
 
   return (
     <div className="flex min-h-screen flex-col bg-[#f7faf7]">

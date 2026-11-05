@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleCheck, CircleX, Download } from "lucide-react";
 
 import { ParticipantReview } from "@/components/admin/participant-review";
+import { AdminIamAccount } from "@/components/apps/iam-account";
 import { Button } from "@/components/ui/button";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import {
@@ -52,6 +53,7 @@ interface TabSpec {
 const TABS: TabSpec[] = [
   { id: "all", label: "All Participants", permission: Permission.ALL_PARTICIPANTS },
   {
+    // Every verified sign-up waits here (also unverified ones while mail is off).
     id: "uat-pending",
     label: "UAT Approval Pending",
     permission: Permission.UAT_APPROVAL_PENDING,
@@ -115,6 +117,9 @@ function isTab(value: string | null): value is Tab {
   return TABS.some((item) => item.id === value);
 }
 
+/** Old links to the retired registrations list now open UAT approval pending. */
+const RENAMED_TABS: Record<string, Tab> = { "sandbox-pending": "uat-pending" };
+
 export default function ParticipantsPage() {
   const queryClient = useQueryClient();
   const { notify } = useToast();
@@ -122,7 +127,7 @@ export default function ParticipantsPage() {
   // The sidebar deep-links each list as ?tab=..., so the URL is the only
   // source of truth for which list is shown.
   const requested = searchParams.get("tab");
-  const tab: Tab = isTab(requested) ? requested : "all";
+  const tab: Tab = isTab(requested) ? requested : (RENAMED_TABS[requested ?? ""] ?? "all");
   const [decision, setDecision] = React.useState<DecisionState | null>(null);
   const [reason, setReason] = React.useState("");
   const [viewing, setViewing] = React.useState<Participant | null>(null);
@@ -262,7 +267,11 @@ export default function ParticipantsPage() {
     <>
       <PageHeader
         title={active.label}
-        description="Sandbox access is automatic once an email is verified; UAT and production are approved here."
+        description={
+          tab === "uat-pending"
+            ? "New registrations awaiting a decision. Approving UAT lets the participant sign in, use try-it and create apps."
+            : "Every sign-up is reviewed for UAT; production is requested later from the portal with a complete profile."
+        }
         breadcrumbs={[{ label: "Home", href: "/admin/dashboard" }, { label: "Manage Participant" }, { label: active.label }]}
         search={{
           value: list.searchInput,
@@ -344,6 +353,9 @@ export default function ParticipantsPage() {
                 <EnvironmentBadge participant={viewing} />
                 <VerifiedBadge verified={viewing.is_email_verified} />
                 <EnabledBadge enabled={viewing.is_enabled} />
+              </div>
+              <div className="border-t border-hairline pt-4 sm:col-span-2">
+                <AdminIamAccount participantId={viewing.participant_id} />
               </div>
               <div className="border-t border-hairline pt-4 sm:col-span-2">
                 <ParticipantReview participantId={viewing.participant_id} />

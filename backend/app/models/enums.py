@@ -27,13 +27,13 @@ class ProfileType(StrEnum):
 
 
 class Environment(StrEnum):
-    """Promotion ladder a user climbs.
+    """Promotion ladder a user climbs. Each step needs an admin decision.
 
-    ``SANDBOX`` is granted automatically once the email address is verified;
-    ``UAT`` and ``PRODUCTION`` each need an admin decision.
+    ``UAT`` is requested by signing up: the administrator reviews the sign-up
+    details, and approval opens the portal (try-it, apps, keys).
+    ``PRODUCTION`` is requested from the portal once the profile is complete.
     """
 
-    SANDBOX = "SANDBOX"
     UAT = "UAT"
     PRODUCTION = "PRODUCTION"
 
@@ -69,6 +69,72 @@ class QueryStatus(IntEnum):
     IN_PROGRESS = 1
     RESOLVED = 2
     CLOSED = 3
+
+
+class ApprovalType(StrEnum):
+    """How an app's request for an API product is decided."""
+
+    #: Granted as soon as the app asks for it.
+    AUTO = "AUTO"
+    #: Waits for an administrator.
+    MANUAL = "MANUAL"
+
+
+class AppStatus(IntEnum):
+    """A participant app. Keys exist only once an administrator approved it."""
+
+    #: Created by the participant; waiting for an administrator. No keys yet.
+    PENDING = 0
+    #: Approved: holds keys and reaches the gateway.
+    ACTIVE = 1
+    #: Switched off by an administrator; its keys stop working at the gateway.
+    REVOKED = 2
+    #: The administrator declined the new app; the participant sees the reason.
+    REJECTED = 3
+
+
+class SubscriptionStatus(IntEnum):
+    """An app's access to one API product."""
+
+    PENDING = 0
+    APPROVED = 1
+    REJECTED = 2
+    REVOKED = 3
+
+
+class CredentialStatus(IntEnum):
+    ACTIVE = 1
+    REVOKED = 2
+
+
+class GatewaySyncStatus(StrEnum):
+    """Whether the gateway holds the app as the sandbox last saved it."""
+
+    PENDING = "PENDING"
+    SYNCED = "SYNCED"
+    FAILED = "FAILED"
+    #: App provisioning is switched off (GATEWAY_APP_SYNC_ENABLED).
+    DISABLED = "DISABLED"
+
+
+class IamUserStatus(StrEnum):
+    """A participant's Keycloak user, as the sandbox last left it."""
+
+    #: Enabled, with at least one environment role.
+    ACTIVE = "ACTIVE"
+    #: Turned off in Keycloak: no approved environment yet, rejected, disabled or deleted.
+    DISABLED = "DISABLED"
+    #: Keycloak could not be updated; the admin console can retry.
+    FAILED = "FAILED"
+
+
+class ApiCallSource(StrEnum):
+    """Where an API history row came from."""
+
+    #: The portal's try-it console (recorded by the sandbox itself).
+    TRYIT = "TRYIT"
+    #: Called straight on the gateway with an app key (APISIX http-logger).
+    DIRECT = "DIRECT"
 
 
 class LogLevel(StrEnum):

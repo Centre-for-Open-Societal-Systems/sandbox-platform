@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import secrets
 import uuid
@@ -65,14 +66,76 @@ def create_refresh_token(
     )
 
 
-def decode_token(token: str, refresh: bool = False) -> dict[str, Any]:
+def decode_token(
+    token: str, refresh: bool = False, role: str | None = None
+) -> dict[str, Any]:
+    """Verify signature and expiry, and that the token is of the expected kind.
+
+    ``typ`` must match (an access token never passes as a refresh token or the
+    other way round) and, with ``role``, so must the audience the token was
+    issued to (admin / participant).
+    """
     key = settings.JWT_REFRESH_TOKEN_KEY if refresh else settings.JWT_ACCESS_TOKEN_KEY
     try:
-        return jwt.decode(token, key, algorithms=[settings.JWT_ALGORITHM])
+        claims = jwt.decode(
+            token,
+            key,
+            algorithms=[settings.JWT_ALGORITHM],
+            options={"require": ["exp", "iat"]},
+        )
     except jwt.ExpiredSignatureError as exc:
         raise UnauthorizedError("Session has expired, please sign in again.") from exc
     except jwt.InvalidTokenError as exc:
         raise UnauthorizedError("Unauthorized! Invalid access token.") from exc
+    if claims.get("typ") != ("refresh" if refresh else "access"):
+        raise UnauthorizedError("Unauthorized! Invalid access token.")
+    if role is not None and claims.get("role") != role:
+        raise UnauthorizedError("Unauthorized! Invalid access token.")
+    return claims
+
+
+def session_expired(added: datetime | None, last_action: datetime | None) -> bool:
+    """True when a sign-in session (``x-auth-key``) is past its idle or absolute limit."""
+    now = datetime.now(UTC)
+
+    def _aware(value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value
+
+    added, last_action = _aware(added), _aware(last_action)
+    if added is not None and now - added > timedelta(seconds=settings.SESSION_MAX_AGE_SECONDS):
+        return True
+    idle_since = last_action or added
+    return idle_since is not None and now - idle_since > timedelta(
+        seconds=settings.SESSION_IDLE_TIMEOUT_SECONDS
+    )
+
+
+# A valid hash checked when the account does not exist, so a sign-in for an
+# unknown address takes as long as one with a wrong password.
+_DUMMY_HASH = bcrypt.hashpw(
+    b"timing-equaliser", bcrypt.gensalt(rounds=settings.BCRYPT_ROUNDS)
+).decode()
+
+
+def verify_password_or_dummy(plain: str, hashed: str | None) -> bool:
+    if not hashed:
+        verify_password(plain or "x", _DUMMY_HASH)
+        return False
+    return verify_password(plain, hashed)
+
+
+def codes_match(given: str | None, expected: str | None) -> bool:
+    """Constant-time comparison of OTPs and similar short secrets."""
+    if not given or not expected:
+        return False
+    return secrets.compare_digest(str(given), str(expected))
+
+
+def sha256_token(value: str) -> str:
+    """Stored form of a reset / invitation token: only its hash is kept."""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 # -------------------------------------------------------------------- misc

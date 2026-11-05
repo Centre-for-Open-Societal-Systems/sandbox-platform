@@ -85,7 +85,6 @@ class Endpoint(Base, UniqueIdMixin, AuditMixin, SoftDeleteMixin):
     description: Mapped[str | None] = mapped_column(Text)
     endpoint_url: Mapped[str | None] = mapped_column(String(2000))
     #: Per-environment upstreams the sandbox proxy forwards to.
-    sandbox_api_url: Mapped[str | None] = mapped_column(String(2000))
     uat_api_url: Mapped[str | None] = mapped_column(String(2000))
     prod_api_url: Mapped[str | None] = mapped_column(String(2000))
     redirect_url: Mapped[str | None] = mapped_column(String(2000))

@@ -212,7 +212,6 @@ class ParticipantOut(ORMModel):
     is_activated: int = 0
     is_rejected: bool = False
     rejection_reason: str | None = None
-    is_sandbox_approved: bool = False
     is_uat_requested: bool = False
     is_uat_approved: bool = False
     is_uat_rejected: bool = False

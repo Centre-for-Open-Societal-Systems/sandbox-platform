@@ -140,9 +140,9 @@ catalogue when `LOAD_DEMO_CATALOGUE=true`.
 `POST /oan/participant/try-it` runs one catalogue end-point for the signed-in
 participant (`services/sandbox_service.py`).
 
-- **Upstream:** the base URL is the end-point's `sandbox_api_url`, `uat_api_url`
+- **Upstream:** the base URL is the end-point's `uat_api_url`
   or `prod_api_url`, falling back to `GATEWAY_BASE_URL`.
-- **Mock mode:** in SANDBOX with no upstream configured, the call is answered
+- **Mock mode:** in UAT with no upstream configured, the call is answered
   from the stored response samples (`endpoint_schema`) instead. This mirrors
   the reference `Sandbox_play_api`:
   - Missing required header or path parameters get the 401 sample.
@@ -164,22 +164,44 @@ Details and Proxy Info screens. The importer:
 - samples the first non-null `anyOf`/`oneOf` alternative;
 - uses schema defaults.
 
-## APISIX gateway — admin integration planned, not built
+## API gateway (APISIX or Kong)
 
-All OAN data APIs are published through the Apache APISIX gateway. Try-it already routes
+All OAN data APIs are published through the API gateway (Apache APISIX). Try-it routes
 gateway products through its proxy (`GATEWAY_ENABLED`, `GATEWAY_*_URL`, in
-`services/sandbox_service.py`); nothing gateway-specific is used there. **The Admin API
-integration is not implemented yet:** `GATEWAY_ADMIN_TOKEN` is read nowhere.
+`services/sandbox_service.py`); nothing gateway-specific is used there.
+
+**Pull from gateway** (built): `integrations/gateway.py` reads services and routes from the
+APISIX or Kong Admin API (`GATEWAY_TYPE`, `GATEWAY_ADMIN_URL`, `GATEWAY_ADMIN_TOKEN`) into one
+format; `services/gateway_sync_service.py` creates or updates catalogue end-points from them
+(`POST /oan/admin/gateway/sync`, `dry_run` for a preview). Off unless
+`GATEWAY_SYNC_ENABLED=true`. Tests: `tests/test_gateway_sync.py`.
+
+**Apps, API products and keys** (built, the Apigee model): a participant creates apps
+(`/oan/participant/apps`); each app has API key + secret credentials and asks for **API
+products** - access bundles of catalogue endpoints defined in the console
+(`/oan/admin/api-products`), approved automatically or by an administrator
+(`/oan/admin/apps`). With `GATEWAY_APP_SYNC_ENABLED=true`, `services/app_gateway_service.py`
+writes each app to APISIX as a consumer: `key-auth` + `hmac-auth` credentials and a
+`consumer-restriction` (`type: route_id`) whitelist of the routes its approved products fully
+cover. Try-it can call "as an app" (`app_id`), the key is injected server-side and redacted in
+API history.
+
+| Table | Holds |
+| --- | --- |
+| `api_product` | access bundle: name, approval type (AUTO / MANUAL), published |
+| `api_product_endpoint` | mapping API product -> catalogue endpoints (many-to-many) |
+| `participant_app` | app per participant: status, gateway consumer, sync status / error / granted routes |
+| `participant_app_product` | mapping app -> API product, with status PENDING / APPROVED / REJECTED / REVOKED and the decision |
+| `participant_app_credential` | API key + secret, Fernet-encrypted (`core/crypto.py`), SHA-256 of the key, prefix, status, issued / revoked dates |
+
+Tests: `tests/test_apps.py`; against a live APISIX: `../../apisix-gateway/apps_flow_test.py`.
+
+Still planned:
 
 | Part | Plan |
 | --- | --- |
-| Clients | `app/integrations/apisix/`: an Admin API client (consumers, `key-auth` / `jwt-auth` credentials, consumer groups for `consumer-restriction`, `limit-count`, routes listing) and a pooled proxy client |
-| Data | `gateway_consumer` and `gateway_credential` tables, one per participant and environment, with secrets encrypted |
-| Lifecycle | Provision on SANDBOX/UAT/PROD approval; revoke on reject, disable or delete |
-| Try-it | Calls go through the APISIX proxy with the participant's credential injected server-side; `apikey` is redacted in logs |
-| Catalogue | A "Sync from APISIX" import of routes |
+| Environments | Production apps, with an Admin API URL and key per environment (apps are UAT only today) |
 | History | A `POST /oan/gateway/apisix/logs` receiver for APISIX's `http-logger` plugin, so API history shows real traffic |
-| Settings | Admin API URL and key per environment |
 
 The open questions (auth plugin, per-environment gateways, Admin URL/key) are listed in the
 root README under *Project status*.

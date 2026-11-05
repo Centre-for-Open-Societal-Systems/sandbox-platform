@@ -142,6 +142,29 @@ def test_every_supported_language_produces_a_snippet(language):
     assert "farmers/search" in code
 
 
+@pytest.mark.parametrize(
+    ("language", "expected"),
+    [
+        ("curl", "--data-urlencode 'grant_type=password'"),
+        ("python", "data=payload"),
+        ("javascript", "new URLSearchParams("),
+        ("go", "grant_type=password&client_id=portal"),
+        ("csharp", "application/x-www-form-urlencoded"),
+    ],
+)
+def test_a_form_content_type_sends_form_fields(language, expected):
+    code = schema_tools.build_code_sample(
+        language,
+        "POST",
+        "https://gw.example.org/token",
+        {"Content-Type": "application/x-www-form-urlencoded"},
+        {"grant_type": "password", "client_id": "portal"},
+    )
+
+    assert expected in code
+    assert '{"grant_type"' not in code
+
+
 # ------------------------------------------- OpenAPI import: allOf / shared responses
 ENVELOPE_SPEC = {
     "openapi": "3.0.3",

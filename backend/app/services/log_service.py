@@ -5,10 +5,14 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.context import admin_country_scope, assert_in_admin_scope
 from app.core.pagination import Page, apply_search, apply_sort, paginate
+from app.models.app import ParticipantApp
 from app.models.logs import ApiLog, UserActionLog
+from app.models.participant import Participant
 from app.repositories.catalog_repository import EndpointRepository, ProductRepository
 from app.repositories.log_repository import ApiLogRepository, UserActionLogRepository
 from app.repositories.participant_repository import (
@@ -36,20 +40,62 @@ TREND_DAYS = 30
 EXPORT_ROW_LIMIT = 5000
 
 
-def list_api_logs(db: Session, query: ApiLogQuery) -> Page:
+def _api_logs_stmt(db: Session, query: ApiLogQuery):
     repo = ApiLogRepository(db)
-    stmt = repo.apply_filters(repo.base_stmt(), query.model_dump())
+    filters = query.model_dump()
+    # Country administrators only see their own country's calls.
+    if (scope := admin_country_scope()) is not None:
+        filters["country_code"] = scope
+    stmt = repo.apply_filters(repo.base_stmt(), filters)
     stmt = apply_search(stmt, query.search, repo.search_cols())
-    stmt = apply_sort(stmt, ApiLog, query.sort_by, query.sort_dir, repo.default_sort)
+    return apply_sort(stmt, ApiLog, query.sort_by, query.sort_dir, repo.default_sort)
 
-    page = paginate(db, stmt, query.page, query.limit)
-    page.rows = [ApiLogOut.model_validate(row) for row in page.rows]
+
+def _with_names(db: Session, rows: list[ApiLogOut]) -> list[ApiLogOut]:
+    """Fill in the app and partner names the log rows only hold ids for."""
+    app_ids = {row.app_id for row in rows if row.app_id}
+    participant_ids = {row.participant_id for row in rows if row.participant_id}
+    apps = (
+        dict(
+            db.execute(
+                select(ParticipantApp.app_id, ParticipantApp.name).where(ParticipantApp.app_id.in_(app_ids))
+            ).all()
+        )
+        if app_ids
+        else {}
+    )
+    partners = {}
+    if participant_ids:
+        for row in db.execute(
+            select(
+                Participant.participant_id,
+                Participant.company_name,
+                Participant.first_name,
+                Participant.last_name,
+                Participant.email_id,
+            ).where(Participant.participant_id.in_(participant_ids))
+        ).all():
+            person = " ".join(part for part in (row.first_name, row.last_name) if part)
+            partners[row.participant_id] = row.company_name or person or row.email_id
+    return [
+        row.model_copy(
+            update={"app_name": apps.get(row.app_id), "participant_name": partners.get(row.participant_id)}
+        )
+        for row in rows
+    ]
+
+
+def list_api_logs(db: Session, query: ApiLogQuery) -> Page:
+    page = paginate(db, _api_logs_stmt(db, query), query.page, query.limit)
+    page.rows = _with_names(db, [ApiLogOut.model_validate(row) for row in page.rows])
     return page
 
 
 def get_api_log(db: Session, log_id: int) -> ApiLogDetailOut | None:
     row = ApiLogRepository(db).get(log_id)
-    return ApiLogDetailOut.model_validate(row) if row else None
+    if row is None or not assert_in_admin_scope(row.country_code):
+        return None
+    return _with_names(db, [ApiLogDetailOut.model_validate(row)])[0]
 
 
 def list_user_action_logs(db: Session, query: UserActionLogQuery) -> Page:
@@ -68,9 +114,10 @@ def list_user_action_logs(db: Session, query: UserActionLogQuery) -> Page:
 def export_api_logs(
     db: Session, query: ApiLogQuery, fmt: str
 ) -> tuple[bytes, str, str]:
-    query.limit = EXPORT_ROW_LIMIT
-    page = list_api_logs(db, query)
-    rows = [row.model_dump() for row in page.rows]
+    # The page-size cap (200) must not truncate an export.
+    stmt = _api_logs_stmt(db, query).limit(EXPORT_ROW_LIMIT)
+    logs = [ApiLogOut.model_validate(row) for row in db.execute(stmt).scalars().all()]
+    rows = [row.model_dump() for row in _with_names(db, logs)]
     return exporters.export(rows, exporters.API_LOG_COLUMNS, fmt, "API Logs")
 
 

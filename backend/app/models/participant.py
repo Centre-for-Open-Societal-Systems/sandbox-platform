@@ -2,7 +2,7 @@
 
 One table, not the reference stack's draft/live pair. Registration writes a
 ``Participant`` row straight away with ``is_email_verified`` false; verifying
-the emailed code flips that flag and grants sandbox access. UAT and production
+the emailed code flips that flag and files the UAT request. UAT and production
 each need a separate admin decision, recorded in ``ParticipantRequestInfo``.
 
 Dropping the ``temp_customer`` staging table removes a bug class the reference
@@ -85,7 +85,7 @@ class Participant(Base, UniqueIdMixin, CountryScopedMixin, SoftDeleteMixin):
     otp_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     otp_request_count: Mapped[int] = mapped_column(Integer, default=0)
 
-    # --- profile, completed later and required before UAT ----------------
+    # --- profile, completed later and required before production ---------
     #: INDIVIDUAL or ORGANIZATION - see ``enums.ProfileType``.
     profile_type: Mapped[str | None] = mapped_column(String(50))
     organization_registration_number: Mapped[str | None] = mapped_column(String(100))
@@ -112,7 +112,7 @@ class Participant(Base, UniqueIdMixin, CountryScopedMixin, SoftDeleteMixin):
     service_domain: Mapped[str | None] = mapped_column(String(250))
     operating_area: Mapped[str | None] = mapped_column(String(250))
     description: Mapped[str | None] = mapped_column(Text)
-    #: True once every field UAT review needs has been supplied.
+    #: True once every field production review needs has been supplied.
     is_profile_complete: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # --- audit -----------------------------------------------------------
@@ -126,8 +126,8 @@ class Participant(Base, UniqueIdMixin, CountryScopedMixin, SoftDeleteMixin):
     modify_by: Mapped[int | None] = mapped_column(BigInteger)
 
     # --- lifecycle -------------------------------------------------------
-    #: Sandbox approval. Granted automatically on email verification, so this
-    #: is APPROVED for every active account; an admin can revoke it.
+    #: Account approval, decided together with UAT: PENDING until the
+    #: administrator approves the sign-up (UAT); no sign-in before that.
     is_approved: Mapped[int] = mapped_column(
         Integer, default=int(ApprovalStatus.PENDING)
     )
@@ -143,7 +143,6 @@ class Participant(Base, UniqueIdMixin, CountryScopedMixin, SoftDeleteMixin):
     activated_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # --- environment promotion ------------------------------------------
-    is_sandbox_approved: Mapped[bool] = mapped_column(Boolean, default=False)
     is_uat_requested: Mapped[bool] = mapped_column(Boolean, default=False)
     is_uat_approved: Mapped[bool] = mapped_column(Boolean, default=False)
     is_uat_rejected: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -209,6 +208,9 @@ class ParticipantToken(Base, UniqueIdMixin):
     )
     is_logout: Mapped[bool] = mapped_column(Boolean, default=False)
     logout_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Keycloak session (``sid``) of a Keycloak sign-in: its access tokens are
+    #: accepted with this session only. Empty for a sign-in checked by the sandbox.
+    keycloak_sid: Mapped[str | None] = mapped_column(String(64), index=True)
 
     user: Mapped[Participant | None] = relationship(back_populates="tokens")
 

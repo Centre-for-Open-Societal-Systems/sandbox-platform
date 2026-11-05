@@ -16,6 +16,7 @@ import {
 import { PAGE_CONTAINER, PageBanner } from "@/components/layout/page-banner";
 import { MethodBadge } from "@/components/ui/status-badge";
 import { CategoryIcon } from "@/lib/category-icons";
+import { sanitizeHtml } from "@/lib/sanitize";
 import { serverFetch } from "@/lib/server-api";
 import type { ProductDetail } from "@/types/api";
 
@@ -101,7 +102,7 @@ export default async function ProductPage({ params }: PageProps) {
               <SectionTitle icon={Sparkles} title="Key features" />
               <div
                 className="prose prose-sm mt-4 max-w-none text-slate-600"
-                dangerouslySetInnerHTML={{ __html: product.key_features }}
+                dangerouslySetInnerHTML={{ __html: sanitizeHtml(product.key_features) }}
               />
             </section>
           ) : null}

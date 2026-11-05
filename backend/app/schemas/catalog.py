@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -113,6 +114,13 @@ class ImportSpecRequest(BaseModel):
     replace_existing: bool = False
 
 
+class GatewaySyncRequest(BaseModel):
+    """Pull the gateway's routes into the catalogue (see GATEWAY_SYNC_ENABLED)."""
+
+    #: Compute the report without saving anything.
+    dry_run: bool = False
+
+
 # ---------------------------------------------------------------- endpoints
 class EndpointCreate(BaseModel):
     product_id: int = Field(..., ge=1)
@@ -124,7 +132,6 @@ class EndpointCreate(BaseModel):
     country_code: str | None = Field(None, max_length=2)
     area_scoped: bool = False
 
-    sandbox_api_url: str | None = None
     uat_api_url: str | None = None
     prod_api_url: str | None = None
     redirect_url: str | None = None
@@ -148,6 +155,20 @@ class EndpointCreate(BaseModel):
     def _leading_slash(cls, v: str) -> str:
         v = v.strip()
         return v if v.startswith(("/", "http://", "https://")) else f"/{v}"
+
+    @field_validator("uat_api_url", "prod_api_url")
+    @classmethod
+    def _http_url(cls, v: str | None) -> str | None:
+        """Upstream base URLs: plain http(s) only, no credentials in the URL."""
+        if not v or not v.strip():
+            return None
+        v = v.strip()
+        parts = urlsplit(v)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            raise ValueError("Use an http:// or https:// URL.")
+        if parts.username or parts.password:
+            raise ValueError("Do not put credentials in the URL.")
+        return v
 
 
 class EndpointUpdate(EndpointCreate):
@@ -179,11 +200,10 @@ class EndpointOut(ORMModel):
 
 
 class EndpointDetailOut(EndpointOut):
-    sandbox_api_url: str | None = None
     uat_api_url: str | None = None
     prod_api_url: str | None = None
     #: Where a call really goes per environment (own URL, else the gateway);
-    #: ``None`` means the SANDBOX answers from samples.
+    #: ``None`` means UAT answers from samples.
     resolved_upstreams: dict[str, str | None] = Field(default_factory=dict)
     path_params: dict[str, Any] | None = None
     query_params: dict[str, Any] | None = None
@@ -266,14 +286,17 @@ class MapperOut(ORMModel):
 
 # --------------------------------------------------------- sandbox "try it"
 class TryItRequest(BaseModel):
-    """Execute one catalogue endpoint against the sandbox upstream."""
+    """Execute one catalogue endpoint against the environment's upstream."""
 
     endpoint_id: int = Field(..., ge=1)
-    environment: Environment = Environment.SANDBOX
+    environment: Environment = Environment.UAT
     path_params: dict[str, Any] = Field(default_factory=dict)
     query_params: dict[str, Any] = Field(default_factory=dict)
     headers: dict[str, str] = Field(default_factory=dict)
     body: Any = None
+    #: Call as this app (``app_id`` from ``GET /participant/apps``): its API
+    #: key is sent in the GATEWAY_APP_KEY_HEADER header.
+    app_id: str | None = None
 
 
 class TryItResponse(BaseModel):
@@ -299,7 +322,23 @@ class CodeSampleRequest(BaseModel):
     language: str = Field(
         "curl", pattern="^(curl|python|javascript|java|go|php|csharp)$"
     )
-    environment: Environment = Environment.SANDBOX
+    environment: Environment = Environment.UAT
+    #: The try-it form as it is now. Without it the snippet shows the
+    #: endpoint's published sample.
+    request: CodeSampleForm | None = None
+
+
+class CodeSampleForm(BaseModel):
+    """What the participant typed in the try-it console, so the snippet matches it."""
+
+    path_params: dict[str, Any] = Field(default_factory=dict)
+    query_params: dict[str, Any] = Field(default_factory=dict)
+    headers: dict[str, str] = Field(default_factory=dict)
+    #: False for a request without a body (e.g. GET); ``body`` is then ignored.
+    has_body: bool = True
+    body: Any = None
+    #: Show the call as this app: its API key goes in the GATEWAY_APP_KEY_HEADER header.
+    app_id: str | None = None
 
 
 ProductDetailOut.model_rebuild()

@@ -13,8 +13,9 @@ from app.services import (
     content_service,
     file_access_service,
     master_service,
+    partner_portal_service,
 )
-from app.utils.files import extension_of, read_file
+from app.utils.files import extension_of, normalise_upload_path, read_file
 
 router = APIRouter(tags=["Public"])
 
@@ -114,10 +115,10 @@ def download(
     Participant documents need a signed-in administrator, or the participant
     who uploaded them.
     """
-    if file_path.lstrip("/").startswith(PRIVATE_FOLDERS):
-        file_access_service.assert_can_read(
-            db, file_path.lstrip("/"), x_access_token, x_auth_key
-        )
+    file_path = normalise_upload_path(file_path)
+    # Case-insensitive: Windows / macOS volumes treat "Participants/" as the same folder.
+    if file_path.lower().startswith(PRIVATE_FOLDERS):
+        file_access_service.assert_can_read(db, file_path, x_access_token, x_auth_key)
     content = read_file(file_path)
     filename = file_path.rsplit("/", 1)[-1]
     media_type = INLINE_TYPES.get(extension_of(filename))
@@ -142,3 +143,9 @@ def health(db: DbSession):
         "Service is healthy.",
         {"env": settings.ENV, "version": settings.APP_VERSION, "database": "up"},
     )
+
+
+@router.get("/partners/{partner_id}/jwks.json", include_in_schema=False)
+def partner_jwks(partner_id: str, db: DbSession):
+    """A partner's public keys (JWKS), read by OpenG2P Partner Management."""
+    return partner_portal_service.jwks(db, partner_id)

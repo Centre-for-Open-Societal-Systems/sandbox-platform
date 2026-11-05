@@ -14,7 +14,9 @@ from app.core.security import (
     create_refresh_token,
     generate_token_urlsafe,
     hash_password,
+    sha256_token,
     verify_password,
+    verify_password_or_dummy,
 )
 from app.models.admin import AdmUser
 from app.repositories.admin_repository import (
@@ -24,7 +26,7 @@ from app.repositories.admin_repository import (
     RoleRepository,
 )
 from app.schemas.admin import AdminLoginResponse
-from app.services import audit_service
+from app.services import audit_service, auth_throttle_service
 from app.services.audit_service import Action
 from app.services.notification_service import TemplateCode, send_templated
 
@@ -35,12 +37,17 @@ RESET_TOKEN_TTL_HOURS = 24
 def login(
     db: Session, username: str, password: str, user_agent: str | None = None
 ) -> AdminLoginResponse:
+    auth_throttle_service.limit_ip(db, "admin-login")
+    throttle_key = f"login:admin:{(username or '').strip().lower()}"
+    auth_throttle_service.assert_not_locked(db, throttle_key)
+
     users = AdminUserRepository(db)
     user = users.get_by_login(username)
 
-    # The same message for "no such user" and "wrong password" so the endpoint
-    # cannot be used to enumerate valid accounts.
-    if user is None or not verify_password(password, user.login_pass):
+    # The same message (and the same bcrypt cost) for "no such user" and
+    # "wrong password" so the endpoint cannot be used to enumerate accounts.
+    if not verify_password_or_dummy(password, user.login_pass if user else None):
+        auth_throttle_service.record_failure(db, throttle_key)
         audit_service.record(
             db,
             Action.ADMIN_LOGIN_FAILED,
@@ -49,6 +56,7 @@ def login(
             description="Failed sign-in attempt",
         )
         raise UnauthorizedError(INVALID_CREDENTIALS)
+    auth_throttle_service.clear(db, throttle_key)
 
     if not user.is_master and not user.is_enabled:
         raise UnauthorizedError(
@@ -134,11 +142,14 @@ def request_password_reset(db: Session, email_id: str) -> None:
     Always succeeds from the caller's point of view - revealing whether an
     address is registered would leak account existence.
     """
+    auth_throttle_service.limit_ip(db, "admin-forgot")
     user = AdminUserRepository(db).get_by(email_id=email_id.strip().lower())
     if user is None:
         return
 
-    user.set_pass_token = generate_token_urlsafe()
+    token = generate_token_urlsafe()
+    # Only the hash is stored; the link in the mail carries the token itself.
+    user.set_pass_token = sha256_token(token)
     user.set_pass_token_time = datetime.now(UTC)
     db.commit()
 
@@ -146,11 +157,12 @@ def request_password_reset(db: Session, email_id: str) -> None:
         db,
         TemplateCode.ADMIN_RESET_PASSWORD,
         user.email_id,
-        {"name": user.full_name or user.login_name, "token": user.set_pass_token},
+        {"name": user.full_name or user.login_name, "token": token},
     )
 
 
 def set_password(db: Session, token: str, new_password: str) -> None:
+    auth_throttle_service.limit_ip(db, "admin-set-password")
     users = AdminUserRepository(db)
     user = users.get_by_set_pass_token(token)
     if user is None:
@@ -165,24 +177,8 @@ def set_password(db: Session, token: str, new_password: str) -> None:
     user.is_activated = True
     user.activate_date = datetime.now(UTC)
     db.commit()
-
-
-def set_password_with_code(
-    db: Session, email_id: str, otp: str, new_password: str
-) -> None:
-    """Development reset while no mail is sent: email + DEV_FIXED_OTP.
-
-    Needs a pending reset (or invitation) for the account; refused whenever
-    real mail is on.
-    """
-    if not settings.fixed_otp:
-        raise ValidationError("Use the link sent to your email.")
-    user = AdminUserRepository(db).get_by(email_id=email_id.strip().lower())
-    if user is None or not user.set_pass_token or otp != settings.fixed_otp:
-        raise ValidationError("The code is not valid. Request a new one.")
-    if _token_expired(user.set_pass_token_time):
-        raise ValidationError("The code has expired, please request a new one.")
-    set_password(db, user.set_pass_token, new_password)
+    # Whoever held a session before the reset is signed out.
+    AdminTokenRepository(db).logout_all(user.admin_id)
 
 
 def _token_expired(issued_at: datetime | None) -> bool:

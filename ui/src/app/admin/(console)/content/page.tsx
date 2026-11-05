@@ -1,8 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus } from "lucide-react";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Plus, Send, SquarePen } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { DataTable, type Column } from "@/components/ui/data-table";
@@ -25,7 +25,7 @@ import { useListQuery } from "@/hooks/use-list-query";
 import { CATALOG_STALE_MS } from "@/lib/cache-times";
 import { contentApi } from "@/lib/services/masters";
 import { formatDate } from "@/lib/utils";
-import type { Faq, TermSection } from "@/types/api";
+import type { EmailTemplate, Faq, TermSection } from "@/types/api";
 
 type Tab = "faqs" | "terms" | "templates";
 
@@ -456,49 +456,343 @@ function TermsTab() {
   );
 }
 
+/** Placeholders the services fill in; any other {{name}} stays as typed. */
+const PLACEHOLDERS: Array<{ name: string; hint: string }> = [
+  { name: "name", hint: "Recipient's name" },
+  { name: "portal_url", hint: "Portal address" },
+  { name: "otp", hint: "Verification code (OTP email)" },
+  { name: "validity_minutes", hint: "Code validity (OTP email)" },
+  { name: "environment", hint: "UAT / PRODUCTION" },
+  { name: "reason", hint: "Rejection reason" },
+  { name: "token", hint: "Link token (password emails)" },
+  { name: "subject", hint: "Query subject (query reply)" },
+  { name: "response", hint: "Reply text (query reply)" },
+];
+
+const PREVIEW_STYLE =
+  "body{margin:0;padding:24px;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#1f2937;background:#fff}";
+
+/** The rendered email in an isolated frame: no scripts, no access to the console. */
+function EmailPreview({ subject, html, loading }: { subject?: string; html?: string; loading?: boolean }) {
+  const srcDoc = `<!doctype html><html><head><meta charset="utf-8"><style>${PREVIEW_STYLE}</style></head><body>${html ?? ""}</body></html>`;
+  return (
+    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-hairline bg-white">
+      <div className="border-b border-hairline bg-surface-soft px-4 py-2.5 text-sm">
+        <span className="text-subtle">Subject: </span>
+        <span className="font-medium">{subject || "—"}</span>
+        {loading ? <span className="ml-2 text-xs text-subtle">updating…</span> : null}
+      </div>
+      <iframe title="Email preview" sandbox="" srcDoc={srcDoc} className="min-h-[420px] w-full flex-1 bg-white" />
+    </div>
+  );
+}
+
+interface TemplateForm {
+  template_id: number;
+  template_code: string;
+  template_name: string;
+  subject: string;
+  body_text: string;
+}
+
 function TemplatesTab() {
+  const queryClient = useQueryClient();
+  const { notify } = useToast();
   const list = useListQuery({ sortBy: "sort_order", sortDir: "asc" });
+  const [viewing, setViewing] = React.useState<EmailTemplate | null>(null);
+  const [form, setForm] = React.useState<TemplateForm | null>(null);
+  const [testing, setTesting] = React.useState<EmailTemplate | null>(null);
+  const [testTo, setTestTo] = React.useState("");
+  const bodyRef = React.useRef<HTMLTextAreaElement>(null);
 
   const templatesQuery = useQuery({
     queryKey: ["admin", "email-templates", list.query],
     queryFn: () => contentApi.listEmailTemplates(list.query),
   });
 
-  const columns: Column<Record<string, unknown>>[] = [
+  // Preview of what is open: the text being typed (edit, debounced) or the saved template (view).
+  const subject = form ? form.subject : (viewing?.subject ?? "");
+  const body = form ? form.body_text : (viewing?.body_text ?? "");
+  const open = form !== null || viewing !== null;
+  const [debounced, setDebounced] = React.useState({ subject, body });
+  React.useEffect(() => {
+    const timer = setTimeout(() => setDebounced({ subject, body }), form ? 400 : 0);
+    return () => clearTimeout(timer);
+  }, [subject, body, form]);
+  const previewQuery = useQuery({
+    queryKey: ["admin", "email-templates", "preview", debounced.subject, debounced.body],
+    queryFn: () => contentApi.previewEmailTemplate({ subject: debounced.subject, body_text: debounced.body }),
+    enabled: open,
+    placeholderData: keepPreviousData,
+  });
+
+  const save = useMutation({
+    mutationFn: (values: TemplateForm) => contentApi.saveEmailTemplate({ ...values }),
+    onSuccess: () => {
+      notify("Email template saved.", "success");
+      setForm(null);
+      queryClient.invalidateQueries({ queryKey: ["admin", "email-templates"] });
+    },
+    onError: (error: Error) => notify(error.message, "error"),
+  });
+
+  const sendTest = useMutation({
+    mutationFn: (values: { to_email: string; template_code: string }) => contentApi.sendTestMail(values),
+    onSuccess: (result, values) => {
+      if (result.sent) {
+        notify(`Test email sent to ${values.to_email}.`, "success");
+        setTesting(null);
+      } else {
+        notify("Mail delivery is switched off (MAIL_ENABLED / SMTP_HOST): nothing was sent.", "error");
+      }
+    },
+    onError: (error: Error) => notify(error.message, "error"),
+  });
+
+  function edit(row: EmailTemplate) {
+    setViewing(null);
+    setForm({
+      template_id: row.template_id,
+      template_code: row.template_code,
+      template_name: row.template_name,
+      subject: row.subject ?? "",
+      body_text: row.body_text ?? "",
+    });
+  }
+
+  function insertPlaceholder(name: string) {
+    if (!form) {
+      return;
+    }
+    const token = `{{${name}}}`;
+    const area = bodyRef.current;
+    const start = area?.selectionStart ?? form.body_text.length;
+    const end = area?.selectionEnd ?? start;
+    setForm({ ...form, body_text: form.body_text.slice(0, start) + token + form.body_text.slice(end) });
+    requestAnimationFrame(() => {
+      area?.focus();
+      area?.setSelectionRange(start + token.length, start + token.length);
+    });
+  }
+
+  const columns: Column<EmailTemplate>[] = [
     {
       key: "template_name",
       header: "Template",
       render: (row) => (
         <div>
-          <p className="font-medium">{String(row.template_name ?? "")}</p>
-          <p className="font-mono text-xs text-muted-foreground">{String(row.template_code ?? "")}</p>
+          <p className="font-medium">{row.template_name}</p>
+          <p className="font-mono text-xs text-muted-foreground">{row.template_code}</p>
         </div>
       ),
     },
-    { key: "subject", header: "Subject", render: (row) => <span className="text-sm">{String(row.subject ?? "—")}</span> },
+    { key: "subject", header: "Subject", render: (row) => <span className="text-sm">{row.subject ?? "—"}</span> },
     {
       key: "variables",
       header: "Placeholders",
       render: (row) => (
         <span className="font-mono text-xs text-muted-foreground">
-          {Array.isArray(row.variables) && row.variables.length > 0
-            ? (row.variables as string[]).join(", ")
-            : "—"}
+          {row.variables && row.variables.length > 0 ? row.variables.join(", ") : "—"}
         </span>
+      ),
+    },
+    { key: "modify_date", header: "Updated Date", render: (row) => formatDate(row.modify_date) },
+    {
+      key: "actions",
+      header: "Actions",
+      render: (row) => (
+        <RowActions
+          recordLabel={`template ${row.template_name}`}
+          onView={() => setViewing(row)}
+          onEdit={() => edit(row)}
+          extra={[{ icon: Send, label: `Send a test of ${row.template_name}`, onClick: () => setTesting(row) }]}
+        />
       ),
     },
   ];
 
   return (
-    <DataTable
-      columns={columns}
-      rows={templatesQuery.data?.templates ?? []}
-      rowKey={(row) => String(row.template_id)}
-      pagination={templatesQuery.data?.pagination}
-      loading={templatesQuery.isLoading}
-      noun="templates"
-      emptyMessage="No email templates have been seeded yet."
-      onPageChange={list.setPage}
-    />
+    <>
+      <p className="mb-4 text-sm text-subtle">
+        Transactional emails the platform sends. Edit the subject and the HTML body (inline styles work best in email
+        clients); <code className="font-mono">{"{{placeholders}}"}</code> are filled in when the email is sent.
+      </p>
+      <DataTable
+        columns={columns}
+        rows={templatesQuery.data?.templates ?? []}
+        rowKey={(row) => row.template_id}
+        pagination={templatesQuery.data?.pagination}
+        loading={templatesQuery.isLoading}
+        noun="templates"
+        emptyMessage="No email templates have been seeded yet."
+        onPageChange={list.setPage}
+      />
+
+      {/* ---------- view ---------- */}
+      <Dialog open={viewing !== null} onOpenChange={(next) => !next && setViewing(null)}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>{viewing?.template_name}</DialogTitle>
+            <DialogDescription>
+              <span className="font-mono">{viewing?.template_code}</span> · shown with sample values
+            </DialogDescription>
+          </DialogHeader>
+          <div className="h-[60vh]">
+            <EmailPreview
+              subject={previewQuery.data?.subject}
+              html={previewQuery.data?.body_html}
+              loading={previewQuery.isFetching}
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => viewing && setTesting(viewing)}>
+              <Send className="h-4 w-4" aria-hidden />
+              Send test
+            </Button>
+            <Button type="button" onClick={() => viewing && edit(viewing)}>
+              <SquarePen className="h-4 w-4" aria-hidden />
+              Edit
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ---------- edit ---------- */}
+      <Dialog open={form !== null} onOpenChange={(next) => !next && setForm(null)}>
+        <DialogContent className="max-w-6xl">
+          <DialogHeader>
+            <DialogTitle>Edit email template</DialogTitle>
+            <DialogDescription>
+              <span className="font-mono">{form?.template_code}</span> · the preview updates as you type (sample
+              values).
+            </DialogDescription>
+          </DialogHeader>
+
+          {form ? (
+            <form
+              className="grid gap-5 lg:grid-cols-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                save.mutate(form);
+              }}
+            >
+              <div className="flex min-w-0 flex-col gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="template_name" required>
+                    Name
+                  </Label>
+                  <Input
+                    id="template_name"
+                    value={form.template_name}
+                    onChange={(event) => setForm({ ...form, template_name: event.target.value })}
+                    required
+                    minLength={2}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="template_subject" required>
+                    Subject
+                  </Label>
+                  <Input
+                    id="template_subject"
+                    value={form.subject}
+                    onChange={(event) => setForm({ ...form, subject: event.target.value })}
+                    required
+                    minLength={2}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="template_body" required>
+                    Body (HTML)
+                  </Label>
+                  <div className="flex flex-wrap gap-1.5" aria-label="Insert a placeholder">
+                    {PLACEHOLDERS.map((item) => (
+                      <button
+                        key={item.name}
+                        type="button"
+                        title={item.hint}
+                        onClick={() => insertPlaceholder(item.name)}
+                        className="rounded-md border border-hairline bg-white px-2 py-0.5 font-mono text-xs text-subtle hover:border-brand-300 hover:text-ink"
+                      >
+                        {`{{${item.name}}}`}
+                      </button>
+                    ))}
+                  </div>
+                  <Textarea
+                    id="template_body"
+                    ref={bodyRef}
+                    className="min-h-[360px] font-mono text-xs"
+                    value={form.body_text}
+                    onChange={(event) => setForm({ ...form, body_text: event.target.value })}
+                    spellCheck={false}
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="flex min-h-[480px] min-w-0 flex-col gap-2">
+                <span className="text-sm font-medium">Preview</span>
+                <EmailPreview
+                  subject={previewQuery.data?.subject}
+                  html={previewQuery.data?.body_html}
+                  loading={previewQuery.isFetching}
+                />
+              </div>
+
+              <DialogFooter className="lg:col-span-2">
+                <Button type="button" variant="outline" onClick={() => setForm(null)}>
+                  Cancel
+                </Button>
+                <Button type="submit" loading={save.isPending}>
+                  Save template
+                </Button>
+              </DialogFooter>
+            </form>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      {/* ---------- test mail ---------- */}
+      <Dialog open={testing !== null} onOpenChange={(next) => !next && setTesting(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Send a test email</DialogTitle>
+            <DialogDescription>Sends the saved version of “{testing?.template_name}” with sample values.</DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (testing) {
+                sendTest.mutate({ to_email: testTo, template_code: testing.template_code });
+              }
+            }}
+          >
+            <div className="space-y-2">
+              <Label htmlFor="test_to" required>
+                Send to
+              </Label>
+              <Input
+                id="test_to"
+                type="email"
+                value={testTo}
+                onChange={(event) => setTestTo(event.target.value)}
+                placeholder="you@example.org"
+                required
+              />
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setTesting(null)}>
+                Cancel
+              </Button>
+              <Button type="submit" loading={sendTest.isPending}>
+                <Send className="h-4 w-4" aria-hidden />
+                Send test
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

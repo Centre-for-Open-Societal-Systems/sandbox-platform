@@ -16,6 +16,7 @@ from app.schemas.catalog import (
     EndpointSchemaCreate,
     EndpointSchemaUpdate,
     EndpointUpdate,
+    GatewaySyncRequest,
     GenerateSchemaRequest,
     ImportSpecRequest,
     MapperCreate,
@@ -26,7 +27,7 @@ from app.schemas.catalog import (
     PublishRequest,
 )
 from app.schemas.common import ListQuery
-from app.services import catalog_service
+from app.services import catalog_service, gateway_sync_service
 from app.utils.files import extension_of, save_upload
 
 router = APIRouter(tags=["Admin / Catalogue"])
@@ -141,6 +142,19 @@ async def import_spec_file(
         db, admin, product_id, spec_text, replace_existing
     )
     return ok("Specification imported successfully.", result)
+
+
+# ----------------------------------------------------------- api gateway
+@router.get("/gateway/status")
+def gateway_status(admin: ManageCatalog):
+    return ok("Gateway sync status.", gateway_sync_service.status())
+
+
+@router.post("/gateway/sync")
+def gateway_sync(payload: GatewaySyncRequest, admin: ManageCatalog, db: DbSession):
+    report = gateway_sync_service.sync(db, admin, dry_run=payload.dry_run)
+    message = "Gateway preview ready." if payload.dry_run else "Pulled from the API gateway."
+    return ok(message, report)
 
 
 # ------------------------------------------------------------- endpoints

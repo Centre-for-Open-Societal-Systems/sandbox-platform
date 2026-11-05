@@ -1,16 +1,30 @@
 """Portal registration and sign-in.
 
 The flow under test: one signup form, then an emailed code. Verifying the code
-activates the account and grants sandbox access with no administrator in the
-loop. UAT and production are separate, reviewed requests.
+files the UAT request; the account opens (sign-in, try-it, apps) only once an
+administrator approves UAT. Production is a separate, reviewed request that
+needs a complete profile.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from app.models.participant import Participant
+import pytest
+
+from app.config.settings import settings
+from app.models.participant import Participant, ParticipantRequestInfo
 from tests.conftest import PARTICIPANT_PASSWORD
+
+
+@pytest.fixture(autouse=True)
+def mail_on(monkeypatch):
+    """These tests cover the emailed-code flow, so mail is on (nothing is sent)."""
+    monkeypatch.setattr(settings, "MAIL_ENABLED", True)
+    monkeypatch.setattr(settings, "SMTP_HOST", "smtp.test")
+    monkeypatch.setattr(
+        "app.services.notification_service.send_email", lambda *args, **kwargs: True
+    )
 
 SIGNUP_PAYLOAD = {
     "first_name": "Abebe",
@@ -44,6 +58,15 @@ def _verify(client, db_session, data) -> Participant:
     return user
 
 
+def _approve_uat(client, admin_headers, user: Participant) -> None:
+    response = client.post(
+        "/oan/admin/participants/approve",
+        headers=admin_headers,
+        json={"participant_id": user.participant_id, "environment": "UAT"},
+    )
+    assert response.status_code == 200, response.text
+
+
 # ------------------------------------------------------------------ signup
 def test_signup_creates_an_unverified_account(client, db_session):
     data = _signup(client)
@@ -65,7 +88,7 @@ def test_signup_does_not_grant_any_environment_before_verification(client, db_se
     _signup(client)
 
     user = db_session.query(Participant).one()
-    assert user.is_sandbox_approved is False
+    assert user.is_uat_requested is False
     assert user.is_uat_approved is False
     assert user.is_prod_approved is False
 
@@ -109,7 +132,7 @@ def test_email_address_cannot_be_registered_twice(client):
 
 
 # ------------------------------------------------------ email verification
-def test_verification_activates_the_account_and_opens_the_sandbox(client, db_session):
+def test_verification_files_the_uat_request_and_waits_for_approval(client, db_session):
     data = _signup(client)
     issued = db_session.query(Participant).filter_by(unique_id=data["unique_id"]).one().otp
     # Any code other than the issued one (which is 000000 while mail is off).
@@ -123,10 +146,19 @@ def test_verification_activates_the_account_and_opens_the_sandbox(client, db_ses
 
     user = _verify(client, db_session, data)
     assert user.is_email_verified is True
-    assert user.is_sandbox_approved is True
-    # Sandbox only - the other two environments still need a decision.
+    assert user.is_uat_requested is True
+    # Both environments still need an administrator decision.
     assert user.is_uat_approved is False
     assert user.is_prod_approved is False
+    request = db_session.query(ParticipantRequestInfo).one()
+    assert (request.target_environment, request.status) == ("UAT", 0)
+
+    login = client.post(
+        "/oan/participant/auth/login",
+        json={"email_id": SIGNUP_PAYLOAD["email_id"], "password": SIGNUP_PAYLOAD["password"]},
+    )
+    assert login.status_code == 401
+    assert "UAT approval" in login.json()["message"]
 
 
 def test_expired_code_is_rejected(client, db_session):
@@ -159,10 +191,21 @@ def test_login_is_refused_until_the_email_is_verified(client):
     assert "verify" in response.json()["message"].lower()
 
 
-def test_signup_then_verify_then_login(client, db_session):
+def test_signup_then_verify_then_uat_approval_then_login(client, db_session, admin_headers):
     """The whole happy path, end to end."""
     data = _signup(client)
-    _verify(client, db_session, data)
+    user = _verify(client, db_session, data)
+
+    pending = client.post(
+        "/oan/admin/participants/pending?environment=UAT", headers=admin_headers, json={}
+    )
+    assert [row["email_id"] for row in pending.json()["data"]["participants"]] == [
+        SIGNUP_PAYLOAD["email_id"]
+    ]
+    _approve_uat(client, admin_headers, user)
+    db_session.refresh(user)
+    assert user.is_uat_approved is True
+    assert db_session.query(ParticipantRequestInfo).one().status == 1
 
     response = client.post(
         "/oan/participant/auth/login",
@@ -175,7 +218,7 @@ def test_signup_then_verify_then_login(client, db_session):
     assert response.status_code == 200
     body = response.json()["data"]
     assert body["access_token"]
-    assert body["environments"] == ["SANDBOX"]
+    assert body["environments"] == ["UAT"]
     assert body["is_profile_complete"] is False
 
 
@@ -190,7 +233,7 @@ def test_login_accepts_the_email_address(client, verified_participant):
     )
 
     assert response.status_code == 200
-    assert response.json()["data"]["environments"] == ["SANDBOX"]
+    assert response.json()["data"]["environments"] == ["UAT"]
 
 
 def test_login_is_case_insensitive_on_the_email_address(client, verified_participant):
@@ -263,9 +306,7 @@ def test_profile_is_scoped_to_the_signed_in_user(client, participant_headers):
     assert response.json()["data"]["email_id"] == "partner@example.org"
 
 
-def test_uat_request_is_refused_while_the_profile_is_incomplete(
-    client, participant_headers
-):
+def test_uat_is_not_requested_from_the_portal(client, participant_headers):
     response = client.post(
         "/oan/participant/promotion-requests",
         headers=participant_headers,
@@ -273,10 +314,28 @@ def test_uat_request_is_refused_while_the_profile_is_incomplete(
     )
 
     assert response.status_code == 400
+    assert "signing up" in response.json()["message"]
+
+
+def test_production_request_is_refused_while_the_profile_is_incomplete(
+    client, participant_headers
+):
+    response = client.post(
+        "/oan/participant/promotion-requests",
+        headers=participant_headers,
+        data={"target_environment": "PRODUCTION"},
+    )
+
+    assert response.status_code == 400
     assert "complete your profile" in response.json()["message"].lower()
 
 
-def test_promotion_to_production_requires_uat_first(client, participant_headers):
+def test_promotion_to_production_requires_uat_first(
+    client, db_session, verified_participant, participant_headers
+):
+    verified_participant.is_uat_approved = False
+    db_session.commit()
+
     response = client.post(
         "/oan/participant/promotion-requests",
         headers=participant_headers,
@@ -287,7 +346,7 @@ def test_promotion_to_production_requires_uat_first(client, participant_headers)
     assert "UAT" in response.json()["message"]
 
 
-def test_completing_the_profile_unlocks_the_uat_request(
+def test_completing_the_profile_unlocks_the_production_request(
     client, db_session, verified_participant, participant_headers
 ):
     response = client.put(
@@ -311,13 +370,13 @@ def test_completing_the_profile_unlocks_the_uat_request(
     promotion = client.post(
         "/oan/participant/promotion-requests",
         headers=participant_headers,
-        data={"target_environment": "UAT"},
+        data={"target_environment": "PRODUCTION"},
     )
     assert promotion.status_code == 200, promotion.text
 
     db_session.refresh(verified_participant)
-    assert verified_participant.is_uat_requested is True
-    assert verified_participant.is_uat_approved is False
+    assert verified_participant.is_prod_requested is True
+    assert verified_participant.is_prod_approved is False
 
 
 def test_users_cannot_reach_admin_routes(client, participant_headers):

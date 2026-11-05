@@ -190,13 +190,14 @@ EMAIL_TEMPLATE_SEEDS = [
     ),
     (
         "PARTICIPANT_WELCOME",
-        "Account activated",
+        "Registration received",
         "Welcome to Open Agri Net",
         "<p>Dear {{name}},</p><p>Your email address is verified and your Open Agri "
-        "Net account is active. Sandbox access is enabled straight away - sign in "
-        "at {{portal_url}} to browse the API catalogue and start making calls.</p>"
-        "<p>When you are ready to move beyond the sandbox, complete your "
-        "organisation profile and request UAT access from your dashboard.</p>",
+        "Net registration has been received. An administrator will review it for "
+        "UAT access; we will email you once it is approved, and you can then sign "
+        "in at {{portal_url}} to browse the API catalogue and start making calls.</p>"
+        "<p>When you are ready to go live, complete your organisation profile and "
+        "request production access from your dashboard.</p>",
     ),
     (
         "PARTICIPANT_APPROVED",
@@ -225,7 +226,7 @@ EMAIL_TEMPLATE_SEEDS = [
         "Environment access approved",
         "{{environment}} access approved",
         "<p>Dear {{name}},</p><p>Your request for {{environment}} access has been "
-        "approved.</p>",
+        "approved. Sign in at {{portal_url}} to continue.</p>",
     ),
     (
         "PROMOTION_REJECTED",
@@ -233,6 +234,22 @@ EMAIL_TEMPLATE_SEEDS = [
         "{{environment}} access request declined",
         "<p>Dear {{name}},</p><p>Your request for {{environment}} access was declined:"
         "</p><p>{{reason}}</p>",
+    ),
+    (
+        "APP_APPROVED",
+        "App approved",
+        "Your app {{app_name}} is approved",
+        "<p>Dear {{name}},</p><p>Your app <strong>{{app_name}}</strong> has been "
+        "approved. Its API key and secret are ready under My Apps at {{portal_url}}; "
+        "send the key in the apikey header on every call.</p><p>{{remarks}}</p>",
+    ),
+    (
+        "APP_REJECTED",
+        "App declined",
+        "Your app {{app_name}} was declined",
+        "<p>Dear {{name}},</p><p>Your app <strong>{{app_name}}</strong> was declined:"
+        "</p><p>{{reason}}</p><p>You can create a new app with the corrected details "
+        "at {{portal_url}}.</p>",
     ),
     (
         "ADMIN_INVITE",
@@ -279,29 +296,28 @@ FAQ_SEEDS = [
             ),
             (
                 "How long does approval take?",
-                "Sandbox access is usually reviewed within three working days. UAT "
-                "and production promotions take longer because they include a "
-                "technical and compliance assessment.",
+                "UAT access is usually reviewed within three working days of "
+                "registration. Production requests take longer because they include "
+                "a technical and compliance assessment.",
             ),
         ],
     ),
     (
-        "Using the Sandbox",
+        "Using UAT",
         [
             (
-                "What data does the sandbox return?",
-                "The sandbox serves synthetic data that matches the production "
-                "schema exactly. No real farmer records are exposed at this stage.",
+                "What data does UAT return?",
+                "UAT serves synthetic data that matches the production schema "
+                "exactly. No real farmer records are exposed at this stage.",
             ),
             (
                 "Are there rate limits?",
-                "Sandbox traffic is limited to 60 requests per minute per "
-                "user. UAT and production limits are agreed during "
-                "onboarding.",
+                "UAT traffic is limited to 60 requests per minute per user. "
+                "Production limits are agreed during onboarding.",
             ),
             (
-                "How do I move from sandbox to production?",
-                "Complete UAT certification first, then raise a production request "
+                "How do I move from UAT to production?",
+                "Complete your organisation profile, then raise a production request "
                 "from your dashboard with the required compliance documents.",
             ),
         ],
@@ -402,17 +418,17 @@ HOME_BLOCK_SEEDS = [
                 {
                     "step": 1,
                     "title": "Register",
-                    "body": "Submit your organisation details and supporting documents.",
+                    "body": "Sign up and verify your email address. An administrator reviews it for UAT access.",
                 },
                 {
                     "step": 2,
-                    "title": "Explore the sandbox",
-                    "body": "Test against synthetic data with full API references.",
+                    "title": "Build in UAT",
+                    "body": "Test against synthetic data with full API references, apps and keys.",
                 },
                 {
                     "step": 3,
-                    "title": "Certify in UAT",
-                    "body": "Validate your integration against pre-production services.",
+                    "title": "Complete your profile",
+                    "body": "Submit your organisation details and supporting documents.",
                 },
                 {
                     "step": 4,

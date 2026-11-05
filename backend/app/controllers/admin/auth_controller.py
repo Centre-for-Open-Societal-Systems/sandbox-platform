@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Header
 
-from app.config.settings import settings
 from app.core.deps import CurrentAdmin, DbSession
 from app.core.responses import ok
 from app.core.security import rsa_decrypt_payload
@@ -86,11 +85,9 @@ def change_password(payload: ChangePasswordRequest, admin: CurrentAdmin, db: DbS
 def forgot_password(payload: ForgotPasswordRequest, db: DbSession):
     admin_auth_service.request_password_reset(db, payload.email_id)
     # Deliberately unconditional so the response cannot confirm registration.
-    if settings.fixed_otp:
-        return ok(
-            "If the address is registered, enter the code to set a new password.",
-            {"is_fixed_otp": True},
-        )
+    # Administrators always reset through the emailed link: there is no
+    # code-based reset for them, not even on a developer machine (without mail
+    # use scripts/set_admin_password.py).
     return ok(
         "If the address is registered, a reset link has been sent.", {"is_fixed_otp": False}
     )
@@ -98,12 +95,7 @@ def forgot_password(payload: ForgotPasswordRequest, db: DbSession):
 
 @router.post("/set-password")
 def set_password(payload: SetPasswordRequest, db: DbSession):
-    if payload.token:
-        admin_auth_service.set_password(db, payload.token, payload.new_password)
-    else:
-        admin_auth_service.set_password_with_code(
-            db, payload.email_id, payload.otp, payload.new_password
-        )
+    admin_auth_service.set_password(db, payload.token, payload.new_password)
     return ok("Password set successfully. You can now sign in.")
 
 

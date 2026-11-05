@@ -17,7 +17,6 @@ import {
   Lock,
   Mail,
   MailCheck,
-  PartyPopper,
   Phone,
   ShieldCheck,
   User,
@@ -40,13 +39,13 @@ type Step = 1 | 2 | 3;
 const STEPS: Array<{ id: Step; label: string }> = [
   { id: 1, label: "Your details" },
   { id: 2, label: "Verify email" },
-  { id: 3, label: "Start building" },
+  { id: 3, label: "Submitted" },
 ];
 
 const BENEFITS = [
-  { icon: Zap, title: "Instant sandbox access", body: "Active as soon as your email is verified." },
+  { icon: Zap, title: "Quick UAT review", body: "Start testing as soon as your registration is approved." },
   { icon: FlaskConical, title: "Synthetic test data", body: "Realistic records, never real farmers." },
-  { icon: ShieldCheck, title: "Clear path to production", body: "Move to UAT and production when ready." },
+  { icon: ShieldCheck, title: "Clear path to production", body: "Move from UAT to production when ready." },
 ];
 
 interface SignupForm {
@@ -126,6 +125,9 @@ export default function RegisterPage() {
   const [uniqueId, setUniqueId] = React.useState("");
   const [maskedEmail, setMaskedEmail] = React.useState("");
   const [fixedOtp, setFixedOtp] = React.useState(false);
+  // Mail is off on the server: no code step, the registration waits for an administrator.
+  const [pendingApproval, setPendingApproval] = React.useState(false);
+  const steps = pendingApproval ? [STEPS[0]!, STEPS[2]!] : STEPS;
   const [otp, setOtp] = React.useState("");
   const [showPassword, setShowPassword] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -166,7 +168,13 @@ export default function RegisterPage() {
       setUniqueId(result.unique_id);
       setMaskedEmail(result.masked_email);
       setFixedOtp(Boolean(result.is_fixed_otp));
-      setStep(2);
+      if (result.requires_verification === false) {
+        setPendingApproval(true);
+        setStep(3);
+        notify("Registration submitted. You can login once an administrator approves UAT access.", "success");
+      } else {
+        setStep(2);
+      }
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "Registration could not be completed.");
@@ -267,7 +275,7 @@ export default function RegisterPage() {
             {/* Form panel */}
             <div className="p-6 sm:p-10">
               <ol className="flex items-center gap-2" aria-label="Sign-up progress">
-                {STEPS.map((item, index) => (
+                {steps.map((item, index) => (
                   <li key={item.id} className="flex flex-1 items-center gap-2 last:flex-none">
                     <span
                       className={cn(
@@ -280,7 +288,11 @@ export default function RegisterPage() {
                       )}
                       aria-current={step === item.id ? "step" : undefined}
                     >
-                      {step > item.id ? <Check className="h-4 w-4" aria-hidden /> : item.id}
+                      {step > item.id || (step === 3 && item.id === 3) ? (
+                        <Check className="h-4 w-4" aria-hidden />
+                      ) : (
+                        index + 1
+                      )}
                     </span>
                     <span
                       className={cn(
@@ -290,7 +302,7 @@ export default function RegisterPage() {
                     >
                       {item.label}
                     </span>
-                    {index < STEPS.length - 1 ? (
+                    {index < steps.length - 1 ? (
                       <span
                         aria-hidden
                         className={cn("mx-1 h-0.5 flex-1 rounded-full", step > item.id ? "bg-brand-600" : "bg-slate-200")}
@@ -575,14 +587,15 @@ export default function RegisterPage() {
 
               {step === 3 ? (
                 <div className="mx-auto mt-10 max-w-md py-4 text-center">
-                  <span className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-brand-gold/20 text-[#b7791f]">
-                    <PartyPopper className="h-8 w-8" aria-hidden />
+                  <span className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-brand-50 text-brand-600">
+                    <ShieldCheck className="h-8 w-8" aria-hidden />
                   </span>
-                  <h2 className="mt-5 text-2xl font-bold text-slate-900">Your account is ready</h2>
+                  <h2 className="mt-5 text-2xl font-bold text-slate-900">Registration submitted</h2>
                   <p className="mt-2 text-slate-600">
-                    Sandbox access is active. Login to browse the API catalogue and make your first
-                    call. When you are ready for UAT, complete your organisation profile from the
-                    dashboard.
+                    Thank you. Your account for{" "}
+                    <span className="font-semibold text-slate-900">{maskedEmail}</span> has been created and
+                    sent to the administrator for UAT approval. We will email you once it is approved; you
+                    can then login, browse the API catalogue and make your first call.
                   </p>
                   <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
                     <button

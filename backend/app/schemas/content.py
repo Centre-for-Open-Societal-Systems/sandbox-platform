@@ -128,6 +128,13 @@ class TestMailRequest(BaseModel):
     body: str | None = None
 
 
+class EmailTemplatePreviewRequest(BaseModel):
+    """A template as typed in the editor (saved or not), rendered with sample values."""
+
+    subject: str = Field("", max_length=500)
+    body_text: str = ""
+
+
 # ------------------------------------------------------------ home page CMS
 class HomeBlockUpsert(BaseModel):
     block_id: int | None = None
@@ -173,21 +180,100 @@ class PublicHomeResponse(BaseModel):
 # ----------------------------------------------------------------- log query
 class ApiLogQuery(ListQuery):
     participant_id: int | None = None
+    #: TRYIT or DIRECT.
+    source: str | None = None
+    app_id: int | None = None
     product_id: int | None = None
     endpoint_id: int | None = None
     environment: str | None = None
     country_code: str | None = None
     status_code: int | None = None
+    #: Multi-select filters (any of these partners / apps).
+    participant_ids: list[int] | None = Field(None, max_length=500)
+    app_ids: list[int] | None = Field(None, max_length=500)
+    #: 2xx, 3xx, 4xx or 5xx (5xx includes calls that got no answer).
+    status_class: str | None = Field(None, pattern="^[2-5]xx$")
     method: str | None = None
     date_from: date | None = None
     date_to: date | None = None
+
+
+class ApiUsageQuery(ApiLogQuery):
+    """Usage / billing report: calls counted per partner, API, app, day..."""
+
+    group_by: str = Field(
+        "participant",
+        pattern="^(participant|participant_endpoint|endpoint|app|product|day|status)$",
+    )
+    sort_by: str | None = "total_calls"
+
+
+class UsageLookupQuery(BaseModel):
+    """One page of a searchable filter dropdown (partners or apps)."""
+
+    search: str | None = Field(None, max_length=100)
+    page: int = Field(1, ge=1)
+    limit: int = Field(20, ge=1, le=50)
+    #: Apps only: limit to these partners' apps.
+    participant_ids: list[int] | None = Field(None, max_length=500)
+
+
+class ApiUsageRow(BaseModel):
+    participant_id: int | None = None
+    participant_name: str | None = None
+    email_id: str | None = None
+    country_code: str | None = None
+    app_id: int | None = None
+    app_name: str | None = None
+    product_id: int | None = None
+    product_name: str | None = None
+    method: str | None = None
+    endpoint_url: str | None = None
+    day: str | None = None
+    status_code: int | None = None
+    endpoints_used: int | None = None
+    apps_used: int | None = None
+    total_calls: int = 0
+    success_calls: int = 0
+    client_errors: int = 0
+    server_errors: int = 0
+    success_rate: float | None = None
+    avg_latency_ms: float | None = None
+    first_call: datetime | None = None
+    last_call: datetime | None = None
+
+
+class ApiUsageCount(BaseModel):
+    label: str
+    value: int
+
+
+class ApiUsageSummary(BaseModel):
+    total_calls: int = 0
+    success_calls: int = 0
+    client_errors: int = 0
+    server_errors: int = 0
+    success_rate: float | None = None
+    avg_latency_ms: float | None = None
+    partners: int = 0
+    apps: int = 0
+    endpoints: int = 0
+    first_call: datetime | None = None
+    last_call: datetime | None = None
+    by_status_code: list[ApiUsageCount] = Field(default_factory=list)
+    by_source: list[ApiUsageCount] = Field(default_factory=list)
+    by_day: list[ApiUsageCount] = Field(default_factory=list)
 
 
 class ApiLogOut(ORMModel):
     id: int
     correlation_id: str | None = None
     transaction_id: str | None = None
+    source: str = "TRYIT"
+    app_id: int | None = None
+    app_name: str | None = None
     participant_id: int | None = None
+    participant_name: str | None = None
     entity_id: str | None = None
     product_id: int | None = None
     endpoint_id: int | None = None
@@ -205,6 +291,9 @@ class ApiLogOut(ORMModel):
 
 
 class ApiLogDetailOut(ApiLogOut):
+    upstream_latency_ms: float | None = None
+    request_size: int | None = None
+    response_size: int | None = None
     request_headers: dict[str, Any] | None = None
     request_body: Any = None
     response_body: Any = None

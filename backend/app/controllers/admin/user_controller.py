@@ -26,8 +26,13 @@ from app.services import admin_user_service
 
 router = APIRouter(tags=["Admin / Users & Roles"])
 
-ManageUsers = Annotated[
+ViewUsers = Annotated[
     AdminPrincipal, Depends(require_permission(Permission.AUM_VIEW_USER_LIST))
+]
+# Creating, editing, disabling and deleting accounts is "Add New User"; the
+# list permission only reads.
+ManageUsers = Annotated[
+    AdminPrincipal, Depends(require_permission(Permission.AUM_ADD_NEW_USER))
 ]
 ManageRoles = Annotated[
     AdminPrincipal, Depends(require_permission(Permission.AUM_MANAGE_ROLES))
@@ -36,7 +41,7 @@ ManageRoles = Annotated[
 
 # ---------------------------------------------------------------- users
 @router.post("/users/list")
-def list_users(payload: AdminUserListQuery, admin: ManageUsers, db: DbSession):
+def list_users(payload: AdminUserListQuery, admin: ViewUsers, db: DbSession):
     return ok(
         "Users loaded.",
         admin_user_service.list_users(db, payload).as_dict("users"),
@@ -44,7 +49,7 @@ def list_users(payload: AdminUserListQuery, admin: ManageUsers, db: DbSession):
 
 
 @router.get("/users/{admin_id}")
-def get_user(admin_id: int, admin: ManageUsers, db: DbSession):
+def get_user(admin_id: int, admin: ViewUsers, db: DbSession):
     return ok(
         "User loaded.",
         admin_user_service.get_user(db, admin_id).model_dump(),
@@ -77,8 +82,10 @@ def delete_user(admin_id: int, admin: ManageUsers, db: DbSession):
 
 @router.post("/users/{admin_id}/invite")
 def resend_invite(admin_id: int, admin: ManageUsers, db: DbSession):
-    admin_user_service.resend_invite(db, admin, admin_id)
-    return ok("Invitation sent successfully.")
+    """A new invitation link (emailed while mail is on); the earlier one stops working."""
+    invitation = admin_user_service.resend_invite(db, admin, admin_id)
+    message = "Invitation sent successfully." if invitation.emailed else "Invitation link created."
+    return ok(message, invitation.model_dump())
 
 
 # ---------------------------------------------------------------- roles
@@ -90,7 +97,7 @@ def list_roles(payload: ListQuery, admin: ManageRoles, db: DbSession):
 
 
 @router.get("/roles/dropdown")
-def role_dropdown(admin: ManageUsers, db: DbSession):
+def role_dropdown(admin: ViewUsers, db: DbSession):
     return ok("Roles loaded.", admin_user_service.role_dropdown(db))
 
 

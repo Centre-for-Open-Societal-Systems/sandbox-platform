@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FileUp, Network, Plus } from "lucide-react";
+import { CheckCircle2, CloudDownload, FileUp, Network, Plus } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,13 +21,15 @@ import { Label } from "@/components/ui/label";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { PageHeader } from "@/components/ui/page-header";
 import { RowActions } from "@/components/ui/row-actions";
-import { PublishedBadge } from "@/components/ui/status-badge";
+import { MethodBadge, PublishedBadge } from "@/components/ui/status-badge";
 import { useToast } from "@/components/ui/toast";
 import { useListQuery } from "@/hooks/use-list-query";
 import { CATALOG_STALE_MS } from "@/lib/cache-times";
 import { catalogApi } from "@/lib/services/catalog";
 import { formatDate } from "@/lib/utils";
-import type { Product } from "@/types/api";
+import type { GatewaySyncReport, GatewaySyncRow, Product } from "@/types/api";
+
+const GATEWAY_NAMES = { apisix: "APISIX", kong: "Kong" } as const;
 
 interface ProductForm {
   product_id?: number;
@@ -56,6 +58,16 @@ export default function ProductsPage() {
   const [importTarget, setImportTarget] = React.useState<Product | null>(null);
   const [specText, setSpecText] = React.useState("");
   const [replaceExisting, setReplaceExisting] = React.useState(false);
+  const [syncReport, setSyncReport] = React.useState<GatewaySyncReport | null>(null);
+
+  // GATEWAY_SYNC_ENABLED on the API decides whether "Pull from gateway" is offered.
+  const gatewayQuery = useQuery({
+    queryKey: ["admin", "gateway-status"],
+    queryFn: () => catalogApi.gatewayStatus(),
+    staleTime: CATALOG_STALE_MS,
+  });
+  const gatewayStatus = gatewayQuery.data;
+  const gatewayName = gatewayStatus ? GATEWAY_NAMES[gatewayStatus.gateway_type] : "gateway";
 
   const productsQuery = useQuery({
     queryKey: ["admin", "products", list.query],
@@ -125,6 +137,22 @@ export default function ProductsPage() {
       setSpecText("");
       setReplaceExisting(false);
       invalidate();
+    },
+    onError: (error: Error) => notify(error.message, "error"),
+  });
+
+  // Preview first (dry run), then apply from the dialog.
+  const gatewaySync = useMutation({
+    mutationFn: (dryRun: boolean) => catalogApi.gatewaySync(dryRun),
+    onSuccess: (report) => {
+      setSyncReport(report);
+      if (!report.dry_run) {
+        notify(
+          `Pulled from ${GATEWAY_NAMES[report.gateway_type]}: ${report.created_count} created, ${report.updated_count} updated.`,
+          "success",
+        );
+        invalidate();
+      }
     },
     onError: (error: Error) => notify(error.message, "error"),
   });
@@ -236,6 +264,41 @@ export default function ProductsPage() {
           </Button>
         }
       />
+
+      {gatewayStatus?.enabled ? (
+        <div className="mb-6 flex flex-col gap-4 rounded-xl border border-hairline bg-surface-soft px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-start gap-3">
+            <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white text-brand-bright ring-1 ring-hairline">
+              <Network className="h-4.5 w-4.5" aria-hidden />
+            </span>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-ink">
+                API gateway: {gatewayName}
+                {gatewayStatus.admin_url_configured ? null : (
+                  <Badge variant="warning" className="ml-2 align-middle">
+                    Not connected
+                  </Badge>
+                )}
+              </p>
+              <p className="mt-0.5 text-sm text-subtle">
+                {gatewayStatus.admin_url_configured
+                  ? "Add new routes and update changed ones from the gateway. You see a preview before anything is saved."
+                  : "Set GATEWAY_ADMIN_URL (and GATEWAY_ADMIN_TOKEN) on the API to pull routes from the gateway."}
+              </p>
+            </div>
+          </div>
+          <Button
+            variant="outline"
+            className="shrink-0"
+            loading={gatewaySync.isPending && syncReport === null}
+            disabled={!gatewayStatus.admin_url_configured}
+            onClick={() => gatewaySync.mutate(true)}
+          >
+            <CloudDownload className="h-4 w-4" aria-hidden />
+            Pull from {gatewayName}
+          </Button>
+        </div>
+      ) : null}
 
       <DataTable
         columns={columns}
@@ -396,6 +459,137 @@ export default function ProductsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={syncReport !== null} onOpenChange={(open) => !open && setSyncReport(null)}>
+        <DialogContent className="max-w-3xl">
+          {syncReport ? (
+            <>
+              <DialogHeader>
+                <DialogTitle>
+                  {syncReport.dry_run
+                    ? `Pull from ${GATEWAY_NAMES[syncReport.gateway_type]}: preview`
+                    : `Pulled from ${GATEWAY_NAMES[syncReport.gateway_type]}`}
+                </DialogTitle>
+                <DialogDescription>
+                  {syncReport.routes} routes in {syncReport.services} services, {syncReport.operations} operations.
+                  New end-points are added unpublished, next to their service&apos;s existing end-points (or in a
+                  new product for the service). Existing ones keep their imported details; only what they lack
+                  is filled in. Nothing is deleted.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <SyncCount label="New" value={syncReport.created_count} tone="text-[#2E7D32]" />
+                <SyncCount label="Updated" value={syncReport.updated_count} tone="text-[#1A5FA8]" />
+                <SyncCount label="Unchanged" value={syncReport.unchanged} />
+                <SyncCount label="Not on gateway" value={syncReport.missing_count} tone="text-[#B26A00]" />
+              </div>
+
+              <div className="mt-2 max-h-[50vh] space-y-5 overflow-y-auto pr-1">
+                {syncReport.dry_run && pendingChanges(syncReport) === 0 ? (
+                  <p className="flex items-center gap-2 rounded-xl border border-hairline bg-surface-soft px-4 py-3 text-sm text-ink">
+                    <CheckCircle2 className="h-4 w-4 shrink-0 text-[#2E7D32]" aria-hidden />
+                    The catalogue is up to date with {GATEWAY_NAMES[syncReport.gateway_type]}. Nothing to pull.
+                  </p>
+                ) : null}
+                {syncReport.products_created.length ? (
+                  <SyncSection title="New products">
+                    {syncReport.products_created.map((product) => (
+                      <li key={product.product_name} className="text-sm">
+                        {product.product_name}
+                      </li>
+                    ))}
+                  </SyncSection>
+                ) : null}
+                <SyncRows title="New end-points" rows={syncReport.created} total={syncReport.created_count} />
+                <SyncRows title="Updated end-points" rows={syncReport.updated} total={syncReport.updated_count} />
+                <SyncRows
+                  title="In the catalogue, not on the gateway (kept)"
+                  rows={syncReport.missing}
+                  total={syncReport.missing_count}
+                />
+                {syncReport.skipped.length ? (
+                  <details className="group rounded-xl border border-hairline px-4 py-3">
+                    <summary className="cursor-pointer text-sm font-semibold text-ink marker:text-subtle">
+                      Skipped routes ({syncReport.skipped_count})
+                      <span className="ml-2 font-normal text-subtle">wildcards and CORS / realtime routes</span>
+                    </summary>
+                    <ul className="mt-3 space-y-2">
+                      {syncReport.skipped.map((row) => (
+                        <li key={`${row.route}-${row.path}`} className="text-sm">
+                          <code className="font-mono text-xs break-all">{row.path}</code>
+                          <span className="block text-xs text-subtle">
+                            {row.route} · {row.reason}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                ) : null}
+              </div>
+
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setSyncReport(null)}>
+                  {syncReport.dry_run && pendingChanges(syncReport) > 0 ? "Cancel" : "Close"}
+                </Button>
+                {syncReport.dry_run && pendingChanges(syncReport) > 0 ? (
+                  <Button
+                    loading={gatewaySync.isPending}
+                    onClick={() => gatewaySync.mutate(false)}
+                  >
+                    <CloudDownload className="h-4 w-4" aria-hidden />
+                    Apply pull
+                  </Button>
+                ) : null}
+              </DialogFooter>
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </>
+  );
+}
+
+function pendingChanges(report: GatewaySyncReport): number {
+  return report.created_count + report.updated_count;
+}
+
+/** One count tile; ``tone`` colours a non-zero value. */
+function SyncCount({ label, value, tone }: { label: string; value: number; tone?: string }) {
+  return (
+    <div className="rounded-xl bg-surface-soft px-3 py-2.5">
+      <p className="text-xs text-subtle">{label}</p>
+      <p className={`mt-1 text-lg font-semibold tabular-nums ${value > 0 && tone ? tone : "text-ink"}`}>{value}</p>
+    </div>
+  );
+}
+
+function SyncSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section>
+      <h3 className="mb-2 text-sm font-semibold text-ink">{title}</h3>
+      <ul className="space-y-1.5">{children}</ul>
+    </section>
+  );
+}
+
+function SyncRows({ title, rows, total }: { title: string; rows: GatewaySyncRow[]; total: number }) {
+  if (!total) return null;
+  return (
+    <SyncSection title={`${title} (${total})`}>
+      {rows.map((row) => (
+        <li key={`${row.method}-${row.path}`} className="flex flex-wrap items-center gap-2 text-sm">
+          <MethodBadge method={row.method} />
+          <code className="font-mono text-xs">{row.path}</code>
+          <span className="text-xs text-subtle">
+            {row.product_name}
+            {row.changes?.length ? ` · adds ${row.changes.join(", ")}` : null}
+          </span>
+        </li>
+      ))}
+      {total > rows.length ? (
+        <li className="text-xs text-subtle">…and {total - rows.length} more</li>
+      ) : null}
+    </SyncSection>
   );
 }

@@ -14,23 +14,23 @@ export const metadata: Metadata = {
 const STAGES = [
   {
     step: 1,
-    title: "Register your organisation",
-    body: "Provide your legal details, trade licence number and the service you intend to build. Individual developers can register too, with identity verification instead of a licence.",
+    title: "Register",
+    body: "Sign up with your name, organisation and contact details, and verify your email address. Individual developers can register too.",
   },
   {
     step: 2,
-    title: "Get approved for the sandbox",
-    body: "The network operator reviews your application, usually within three working days. Once approved you can sign in and call every published endpoint.",
+    title: "Get approved for UAT",
+    body: "The network operator reviews your registration, usually within three working days. Once approved you can sign in, create apps and call every published endpoint.",
   },
   {
     step: 3,
     title: "Build against synthetic data",
-    body: "Sandbox responses match the production schema exactly but contain no real farmer records, so you can develop and demo freely.",
+    body: "UAT responses match the production schema exactly but contain no real farmer records, so you can develop and demo freely.",
   },
   {
     step: 4,
-    title: "Certify in UAT",
-    body: "Request UAT access when your integration is ready. UAT runs against pre-production services and is where compatibility is formally signed off.",
+    title: "Complete your profile",
+    body: "When your integration is ready, add your organisation details: legal registration, trade licence or identity verification, and the service you intend to build.",
   },
   {
     step: 5,

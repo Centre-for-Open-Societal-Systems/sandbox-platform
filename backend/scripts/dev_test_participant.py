@@ -1,4 +1,4 @@
-"""Create (or reset) a local test participant with sandbox access, for trying the portal.
+"""Create (or reset) a local test participant with UAT access, for trying the portal.
 
 Local development only - never run against a shared or production database.
 
@@ -40,7 +40,8 @@ def main() -> None:
         user.is_email_verified = True
         user.is_approved = 1
         user.is_activated = 1
-        user.is_sandbox_approved = True
+        user.is_uat_requested = True
+        user.is_uat_approved = True
         db.commit()
         print(f"Test participant ready: {EMAIL} (password in this script)")
     finally:

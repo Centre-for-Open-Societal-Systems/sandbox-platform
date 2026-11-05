@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import ipaddress
 import time
 import uuid
 
 from fastapi import FastAPI, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from app.config.settings import settings
 from app.core.context import (
     actor_id_ctx,
     actor_type_ctx,
     client_ip_ctx,
     correlation_id_ctx,
+    request_state_ctx,
 )
 from app.core.logging import get_logger
 
@@ -21,15 +24,40 @@ logger = get_logger("app.access")
 CORRELATION_HEADER = "x-correlation-id"
 
 
+def _trusted(address: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    for entry in settings.trusted_proxies_list:
+        try:
+            if ip in ipaddress.ip_network(entry, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def get_client_ip(request: Request) -> str:
-    """Resolve the caller IP, honouring the proxy chain in front of the app."""
+    """Resolve the caller IP.
+
+    Forwarding headers are only believed when the socket peer is one of
+    ``TRUSTED_PROXIES``; anyone else could write any address into them. The
+    client is then the right-most X-Forwarded-For entry that is not itself a
+    trusted proxy.
+    """
+    peer = request.client.host if request.client else ""
+    if not _trusted(peer):
+        return peer
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        for hop in reversed([part.strip() for part in forwarded.split(",") if part.strip()]):
+            if not _trusted(hop):
+                return hop
     real_ip = request.headers.get("x-real-ip")
     if real_ip:
         return real_ip.strip()
-    return request.client.host if request.client else ""
+    return peer
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
@@ -42,6 +70,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             client_ip_ctx.set(get_client_ip(request)),
             actor_id_ctx.set(""),
             actor_type_ctx.set("anonymous"),
+            request_state_ctx.set({}),
         ]
         request.state.correlation_id = correlation_id
 
@@ -51,7 +80,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         finally:
             elapsed_ms = (time.perf_counter() - started) * 1000
             for var, token in zip(
-                (correlation_id_ctx, client_ip_ctx, actor_id_ctx, actor_type_ctx),
+                (correlation_id_ctx, client_ip_ctx, actor_id_ctx, actor_type_ctx, request_state_ctx),
                 tokens,
                 strict=True,
             ):

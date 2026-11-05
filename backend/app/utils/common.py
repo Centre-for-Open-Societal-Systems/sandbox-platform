@@ -5,6 +5,7 @@ Ports the grab-bag in ``utilities/common.js`` and ``utilities/commonUtils.js``.
 
 from __future__ import annotations
 
+import html
 import re
 import secrets
 import string
@@ -77,18 +78,25 @@ def dict_diff(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
     return changes
 
 
-def render_template(text: str | None, variables: dict[str, Any]) -> str:
+def render_template(
+    text: str | None, variables: dict[str, Any], escape_html: bool = False
+) -> str:
     """Substitute ``{{name}}`` placeholders.
 
     Deliberately not Jinja: templates are edited by admins in a rich-text box,
-    so expression evaluation would be an injection surface.
+    so expression evaluation would be an injection surface. With
+    ``escape_html`` (HTML bodies) the values are escaped, so a participant's
+    name or message cannot add markup or links to a mail.
     """
     if not text:
         return ""
 
     def _replace(match: re.Match) -> str:
         key = match.group(1).strip()
-        return str(variables.get(key, match.group(0)))
+        if key not in variables:
+            return match.group(0)
+        value = str(variables[key])
+        return html.escape(value, quote=True) if escape_html else value
 
     return re.sub(r"\{\{\s*([\w.]+)\s*\}\}", _replace, text)
 

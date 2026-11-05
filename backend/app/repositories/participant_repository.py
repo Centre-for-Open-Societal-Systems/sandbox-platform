@@ -5,8 +5,10 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import ColumnElement, Select, and_, func, or_, select
 
+from app.config.settings import settings
+from app.core.security import sha256_token
 from app.models.enums import ApprovalStatus, Environment
 from app.models.participant import (
     Participant,
@@ -15,6 +17,29 @@ from app.models.participant import (
     ParticipantToken,
 )
 from app.repositories.base import BaseRepository
+
+
+def uat_pending_condition() -> ColumnElement[bool]:
+    """Waiting for the UAT decision: a sign-up that asked for UAT.
+
+    A sign-up asks once its email address is verified (at once while mail is
+    off). While mail is off no code can reach anyone, so a sign-up that never
+    entered its code waits for the decision too.
+    """
+    requested = and_(
+        Participant.is_uat_requested.is_(True),
+        Participant.is_uat_approved.is_(False),
+        Participant.is_uat_rejected.is_(False),
+    )
+    if settings.mail_active:
+        return requested
+    unverified = and_(
+        Participant.is_email_verified.is_(False),
+        Participant.is_approved == int(ApprovalStatus.PENDING),
+        Participant.is_rejected.is_(False),
+        Participant.is_uat_approved.is_(False),
+    )
+    return or_(requested, unverified)
 
 
 class ParticipantRepository(BaseRepository[Participant]):
@@ -47,7 +72,8 @@ class ParticipantRepository(BaseRepository[Participant]):
         return row is not None
 
     def get_by_reset_token(self, token: str) -> Participant | None:
-        return self.get_by(reset_pass_token=token)
+        # Only the token's hash is stored.
+        return self.get_by(reset_pass_token=sha256_token(token))
 
     def environment_stmt(self, environment: Environment | None) -> Select:
         """List filtered by promotion state - the console environment tabs."""
@@ -56,8 +82,6 @@ class ParticipantRepository(BaseRepository[Participant]):
             stmt = stmt.where(Participant.is_uat_approved.is_(True))
         elif environment == Environment.PRODUCTION:
             stmt = stmt.where(Participant.is_prod_approved.is_(True))
-        elif environment == Environment.SANDBOX:
-            stmt = stmt.where(Participant.is_sandbox_approved.is_(True))
         return stmt
 
     def pending_stmt(self, environment: Environment) -> Select:
@@ -74,17 +98,7 @@ class ParticipantRepository(BaseRepository[Participant]):
                 Participant.is_prod_approved.is_(False),
                 Participant.is_prod_rejected.is_(False),
             )
-        if environment == Environment.UAT:
-            return stmt.where(
-                Participant.is_uat_requested.is_(True),
-                Participant.is_uat_approved.is_(False),
-                Participant.is_uat_rejected.is_(False),
-            )
-        return stmt.where(
-            Participant.is_email_verified.is_(True),
-            Participant.is_approved == int(ApprovalStatus.PENDING),
-            Participant.is_rejected.is_(False),
-        )
+        return stmt.where(uat_pending_condition())
 
     def rejected_stmt(self, environment: Environment | None = None) -> Select:
         stmt = self.base_stmt()
@@ -136,12 +150,7 @@ class ParticipantRepository(BaseRepository[Participant]):
         return {
             "total_participants": _count(),
             "unverified_participants": _count(Participant.is_email_verified.is_(False)),
-            "sandbox_participants": _count(Participant.is_sandbox_approved.is_(True)),
-            "uat_pending": _count(
-                Participant.is_uat_requested.is_(True),
-                Participant.is_uat_approved.is_(False),
-                Participant.is_uat_rejected.is_(False),
-            ),
+            "uat_pending": _count(uat_pending_condition()),
             "uat_participants": _count(Participant.is_uat_approved.is_(True)),
             "prod_pending": _count(
                 Participant.is_prod_requested.is_(True),
@@ -219,6 +228,20 @@ class ParticipantTokenRepository(BaseRepository[ParticipantToken]):
         token.is_logout = True
         token.logout_time = datetime.now(UTC)
         self.db.commit()
+
+    def logout_all(self, participant_id: int, keep: str | None = None) -> int:
+        """End every live session of the participant, except ``keep`` (an auth key)."""
+        stmt = select(ParticipantToken).where(
+            ParticipantToken.participant_id == participant_id,
+            ParticipantToken.is_logout.is_(False),
+        )
+        rows = [r for r in self.db.execute(stmt).scalars().all() if r.unique_id != keep]
+        now = datetime.now(UTC)
+        for row in rows:
+            row.is_logout = True
+            row.logout_time = now
+        self.db.commit()
+        return len(rows)
 
 
 class ParticipantRequestRepository(BaseRepository[ParticipantRequestInfo]):

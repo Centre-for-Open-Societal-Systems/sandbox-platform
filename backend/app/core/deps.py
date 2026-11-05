@@ -17,11 +17,12 @@ from fastapi import Depends, Header, Request
 from sqlalchemy.orm import Session
 
 from app.config.settings import settings
-from app.core.context import actor_id_ctx, actor_type_ctx
+from app.core.context import actor_id_ctx, actor_type_ctx, set_admin_country
 from app.core.database import get_db
 from app.core.exceptions import ForbiddenError, UnauthorizedError
 from app.core.permissions import Permission
-from app.core.security import decode_token
+from app.core.security import decode_token, session_expired
+from app.integrations import keycloak_oidc
 from app.models.admin import AdmUser
 from app.models.participant import Participant
 from app.repositories.admin_repository import (
@@ -66,6 +67,9 @@ class AdminPrincipal:
 class ParticipantPrincipal:
     participant: Participant
     auth_key: str
+    #: The verified Keycloak access token (keycloak sign-in only): try-it
+    #: sends it to a gateway that checks partner tokens.
+    keycloak_token: str | None = None
 
     @property
     def id(self) -> int:
@@ -90,11 +94,16 @@ def get_current_admin(
     x_auth_key: Annotated[str | None, Header(alias="x-auth-key")] = None,
 ) -> AdminPrincipal:
     access_token, auth_key = _require_headers(x_access_token, x_auth_key)
-    decode_token(access_token)  # raises UnauthorizedError when invalid/expired
+    # Raises UnauthorizedError when invalid/expired or not an admin access token.
+    claims = decode_token(access_token, role="admin")
 
     token = AdminTokenRepository(db).get_active(auth_key)
-    if token is None:
+    # The JWT must belong to the same account as the session it is sent with.
+    if token is None or str(token.admin_id) != str(claims.get("id")):
         raise UnauthorizedError("Session is expired or invalid.")
+    if session_expired(token.added_date, token.last_action):
+        AdminTokenRepository(db).logout(token)
+        raise UnauthorizedError("Session has expired, please sign in again.")
 
     user = AdminUserRepository(db).get(token.admin_id)
     if user is None or user.is_deleted:
@@ -109,6 +118,8 @@ def get_current_admin(
     permissions = PermissionRepository(db).allowed_ids_for_role(user.role_id)
     actor_type_ctx.set("admin")
     actor_id_ctx.set(str(user.admin_id))
+    # Country administrators work on their own country's participants only.
+    set_admin_country(None if user.is_master else user.country_code)
     return AdminPrincipal(user=user, auth_key=auth_key, permissions=permissions)
 
 
@@ -118,25 +129,43 @@ def get_current_participant(
     x_auth_key: Annotated[str | None, Header(alias="x-auth-key")] = None,
 ) -> ParticipantPrincipal:
     access_token, auth_key = _require_headers(x_access_token, x_auth_key)
-    decode_token(access_token)
-
     token = ParticipantTokenRepository(db).get_active(auth_key)
-    if token is None:
-        raise UnauthorizedError("Session is expired or invalid.")
+    if settings.keycloak_login:
+        # A Keycloak access token (verified locally: JWKS, RS256, iss, exp,
+        # typ, azp, jti) of the very Keycloak session this sandbox session
+        # was opened with.
+        claims = keycloak_oidc.verify_access_token(access_token)
+        if token is None or not token.keycloak_sid or token.keycloak_sid != claims.get("sid"):
+            raise UnauthorizedError("Session is expired or invalid.")
+    else:
+        claims = decode_token(access_token, role="participant")
+        if token is None or str(token.participant_id) != str(claims.get("id")):
+            raise UnauthorizedError("Session is expired or invalid.")
+    if session_expired(token.added_date, token.last_action):
+        ParticipantTokenRepository(db).logout(token)
+        raise UnauthorizedError("Session has expired, please sign in again.")
 
     participant = ParticipantRepository(db).get(token.participant_id)
     if participant is None or participant.is_deleted:
         raise UnauthorizedError("Your account no longer exists.")
+    if settings.keycloak_login and claims.get("participant_uid") != str(participant.unique_id):
+        raise UnauthorizedError("Session is expired or invalid.")
     if not participant.is_enabled:
         raise ForbiddenError(
             "Your account has been blocked, contact the system administrator."
         )
+    if participant.is_rejected:
+        raise ForbiddenError("Your account is not approved.")
 
     ParticipantTokenRepository(db).touch(token)
 
     actor_type_ctx.set("participant")
     actor_id_ctx.set(str(participant.participant_id))
-    return ParticipantPrincipal(participant=participant, auth_key=auth_key)
+    return ParticipantPrincipal(
+        participant=participant,
+        auth_key=auth_key,
+        keycloak_token=access_token if settings.keycloak_login else None,
+    )
 
 
 def require_permission(permission: Permission):

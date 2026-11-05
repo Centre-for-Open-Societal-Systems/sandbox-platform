@@ -2,8 +2,9 @@
 
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MailPlus, Plus } from "lucide-react";
+import { Link2, Plus } from "lucide-react";
 
+import { SecretField } from "@/components/apps/app-ui";
 import { Button } from "@/components/ui/button";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import {
@@ -25,7 +26,7 @@ import { useListQuery } from "@/hooks/use-list-query";
 import { CATALOG_STALE_MS } from "@/lib/cache-times";
 import { adminApi } from "@/lib/services/admin";
 import { formatDate } from "@/lib/utils";
-import type { AdminUser } from "@/types/api";
+import type { AdminInvite, AdminUser, AdminUserCreated } from "@/types/api";
 
 interface FormState {
   admin_id?: number;
@@ -53,6 +54,8 @@ export default function AdministratorsPage() {
   const { notify } = useToast();
   const list = useListQuery({ sortBy: "added_date" });
   const [form, setForm] = React.useState<FormState | null>(null);
+  // The set-password link of an invitation just made, shown so it can be copied.
+  const [invite, setInvite] = React.useState<{ name: string; invitation: AdminInvite } | null>(null);
   const { confirm, dialog: confirmDialog } = useConfirm();
 
   const usersQuery = useQuery({
@@ -85,11 +88,17 @@ export default function AdministratorsPage() {
       };
       return values.admin_id ? adminApi.updateUser(payload) : adminApi.createUser(payload);
     },
-    onSuccess: (_data, values) => {
+    onSuccess: (data, values) => {
+      const invitation = values.admin_id ? null : (data as AdminUserCreated).invitation;
+      if (invitation) {
+        setInvite({ name: values.first_name || values.login_name, invitation });
+      }
       notify(
         values.admin_id
           ? "User updated successfully."
-          : "User created. An invitation has been emailed to them.",
+          : invitation?.emailed
+            ? "User created. An invitation has been emailed to them."
+            : "User created. Copy the invitation link and send it to them.",
         "success",
       );
       closeForm();
@@ -118,7 +127,10 @@ export default function AdministratorsPage() {
 
   const resendInvite = useMutation({
     mutationFn: (user: AdminUser) => adminApi.resendInvite(user.admin_id),
-    onSuccess: () => notify("Invitation sent.", "success"),
+    onSuccess: (invitation, user) => {
+      setInvite({ name: user.first_name || user.login_name, invitation });
+      notify(invitation.emailed ? "Invitation sent." : "New invitation link created.", "success");
+    },
     onError: (error: Error) => notify(error.message, "error"),
   });
 
@@ -166,7 +178,7 @@ export default function AdministratorsPage() {
             }
             extra={
               !row.is_activated
-                ? [{ icon: MailPlus, label: `Resend invite to ${name}`, onClick: () => resendInvite.mutate(row) }]
+                ? [{ icon: Link2, label: `New invitation link for ${name}`, onClick: () => resendInvite.mutate(row) }]
                 : []
             }
             onDelete={async () => {
@@ -260,6 +272,26 @@ export default function AdministratorsPage() {
       />
 
       {confirmDialog}
+      <Dialog open={invite !== null} onOpenChange={(open) => !open && setInvite(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Invitation link</DialogTitle>
+            <DialogDescription>
+              {invite?.invitation.emailed
+                ? `Also emailed to ${invite.name}. `
+                : `Mail is off: nothing was emailed. Send this link to ${invite?.name ?? "the user"} yourself. `}
+              Opening it lets them set their password. It works once, for 24 hours; a new link
+              replaces it.
+            </DialogDescription>
+          </DialogHeader>
+          {invite ? <SecretField label="Set-password link" value={invite.invitation.invite_url} /> : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setInvite(null)}>
+              Done
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={form !== null} onOpenChange={(open) => !open && closeForm()}>
         <DialogContent>
           <DialogHeader>
@@ -267,7 +299,7 @@ export default function AdministratorsPage() {
             <DialogDescription>
               {form?.admin_id
                 ? "Update this account's details and role."
-                : "The user receives an email invitation to set their own password."}
+                : "The user sets their own password from an invitation link: emailed to them, and shown here to copy."}
             </DialogDescription>
           </DialogHeader>
 

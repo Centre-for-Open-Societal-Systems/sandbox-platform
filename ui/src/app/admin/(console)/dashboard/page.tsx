@@ -306,7 +306,7 @@ function OnboardingPipeline({ counters, loading }: { counters?: DashboardCounter
   const stages = [
     { label: "Registered", value: total, href: "/admin/participants" },
     { label: "Email verified", value: total - counters.unverified_participants, href: "/admin/participants" },
-    { label: "Sandbox access", value: counters.sandbox_participants, href: "/admin/participants" },
+    { label: "UAT pending", value: counters.uat_pending, href: "/admin/participants?tab=uat-pending" },
     { label: "UAT approved", value: counters.uat_participants, href: "/admin/participants?tab=uat" },
     { label: "Production approved", value: counters.prod_participants, href: "/admin/participants?tab=prod" },
   ];

@@ -52,6 +52,9 @@ class Permission(IntEnum):
     # OAN additions beyond the reference console.
     COUNTRY_MANAGEMENT = 27
     NETWORK_PARTICIPANTS = 28
+    API_PRODUCTS = 29
+    PARTICIPANT_APPS = 30
+    API_USAGE = 31
 
 
 #: ``permission_id -> (label, parent_id, has_submenu)``. Seeded into
@@ -113,6 +116,7 @@ PERMISSION_TREE: dict[int, tuple[str, int | None, bool]] = {
     Permission.AUDIT_LOGS: ("Audit Logs", None, True),
     Permission.USER_TRACKING: ("User Tracking", Permission.AUDIT_LOGS, False),
     Permission.API_HISTORY: ("API History", Permission.AUDIT_LOGS, False),
+    Permission.API_USAGE: ("API Usage & Billing", Permission.AUDIT_LOGS, False),
     Permission.MASTER_ENTRY: ("Master Entry", None, True),
     Permission.CATEGORY: ("Categories", Permission.MASTER_ENTRY, False),
     Permission.MAPPER: ("Mapper", Permission.MASTER_ENTRY, False),
@@ -130,6 +134,12 @@ PERMISSION_TREE: dict[int, tuple[str, int | None, bool]] = {
     ),
     Permission.NETWORK_PARTICIPANTS: (
         "Network Members",
+        Permission.PARTICIPANT_MANAGEMENT,
+        False,
+    ),
+    Permission.API_PRODUCTS: ("API Products", None, False),
+    Permission.PARTICIPANT_APPS: (
+        "Apps & Keys",
         Permission.PARTICIPANT_MANAGEMENT,
         False,
     ),

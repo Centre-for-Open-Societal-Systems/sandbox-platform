@@ -11,6 +11,7 @@ from app.core.permissions import Permission
 from app.core.responses import ok
 from app.schemas.common import ListQuery, ToggleRequest
 from app.schemas.content import (
+    EmailTemplatePreviewRequest,
     EmailTemplateUpsert,
     FaqCreate,
     FaqTypeCreate,
@@ -22,7 +23,12 @@ from app.schemas.content import (
     TestMailRequest,
 )
 from app.services import content_service
-from app.services.notification_service import send_email, send_templated
+from app.services.notification_service import (
+    render_preview,
+    sample_variables,
+    send_email,
+    send_templated,
+)
 from app.utils.files import save_upload
 
 router = APIRouter(tags=["Admin / Content"])
@@ -164,12 +170,18 @@ def upsert_email_template(
     return ok("Email template saved successfully.", row.model_dump())
 
 
+@router.post("/email-templates/preview")
+def preview_email_template(payload: EmailTemplatePreviewRequest, admin: ManageContent):
+    """Subject and body as the recipient would see them, with sample values."""
+    return ok("Preview rendered.", render_preview(payload.subject, payload.body_text))
+
+
 @router.post("/email-templates/test")
 def send_test_mail(payload: TestMailRequest, admin: ManageContent, db: DbSession):
-    """Verify SMTP configuration by sending one message."""
+    """Send one message: a stored template filled with sample values, or free text."""
     if payload.template_code:
         sent = send_templated(
-            db, payload.template_code, payload.to_email, {"name": "Test User"}
+            db, payload.template_code, payload.to_email, sample_variables()
         )
     else:
         sent = send_email(

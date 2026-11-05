@@ -103,11 +103,6 @@ type AccessTone = "success" | "info" | "warning" | "danger" | "neutral";
 function environmentRows(profile: Participant | undefined) {
   const rows: Array<{ name: string; label: string; tone: AccessTone }> = [
     {
-      name: "Sandbox",
-      label: profile?.is_sandbox_approved ? "Active" : "Pending approval",
-      tone: profile?.is_sandbox_approved ? "success" : "warning",
-    },
-    {
       name: "UAT",
       label: profile?.is_uat_approved
         ? "Active"
@@ -209,7 +204,7 @@ export default function ParticipantProfilePage() {
     onSuccess: (updated) => {
       notify(
         updated.is_profile_complete
-          ? "Profile saved. You can now request UAT access."
+          ? "Profile saved. You can now request production access."
           : "Profile saved.",
         "success",
       );
@@ -221,7 +216,7 @@ export default function ParticipantProfilePage() {
   const [productionFormOpen, setProductionFormOpen] = React.useState(false);
 
   const requestPromotion = useMutation({
-    mutationFn: ({ formData }: { environment: "UAT" | "PRODUCTION"; formData: FormData }) =>
+    mutationFn: ({ formData }: { environment: "PRODUCTION"; formData: FormData }) =>
       participantApi.requestPromotion(formData),
     onSuccess: (_result, { environment }) => {
       notify(`${environment} access request submitted for review.`, "success");
@@ -230,12 +225,6 @@ export default function ParticipantProfilePage() {
     },
     onError: (error: Error) => notify(error.message, "error"),
   });
-
-  function requestUat() {
-    const formData = new FormData();
-    formData.append("target_environment", "UAT");
-    requestPromotion.mutate({ environment: "UAT", formData });
-  }
 
   const changePassword = useMutation({
     mutationFn: () => participantApi.changePassword(passwords.old_password, passwords.new_password),
@@ -282,7 +271,7 @@ export default function ParticipantProfilePage() {
           <Panel
             icon={Building2}
             title="Organisation details"
-            description="What the network operator reviews when you request UAT access. Sandbox access does not depend on these."
+            description="What the network operator reviews when you request production access. UAT access does not depend on these."
           >
             {form ? (
               <form
@@ -554,33 +543,22 @@ export default function ParticipantProfilePage() {
             </ul>
 
             <div className="mt-4 space-y-3">
-              {profile && !profile.is_uat_approved ? (
+              {profile?.is_uat_approved && !profile.is_prod_approved ? (
                 <>
-                  {!complete ? (
+                  {!complete && !profile.is_prod_requested ? (
                     <p className="flex items-start gap-2 text-sm text-subtle">
                       <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" aria-hidden />
-                      Complete {missing.length} more field{missing.length === 1 ? "" : "s"} to request UAT access.
+                      Complete {missing.length} more field{missing.length === 1 ? "" : "s"} to request production access.
                     </p>
                   ) : null}
                   <Button
                     className="w-full"
-                    disabled={!complete || profile.is_uat_requested}
-                    loading={requestPromotion.isPending}
-                    onClick={requestUat}
+                    disabled={!complete || profile.is_prod_requested}
+                    onClick={() => setProductionFormOpen(true)}
                   >
-                    {profile.is_uat_requested ? "UAT request under review" : "Request UAT access"}
+                    {profile.is_prod_requested ? "Production request under review" : "Request production access"}
                   </Button>
                 </>
-              ) : null}
-
-              {profile?.is_uat_approved && !profile.is_prod_approved ? (
-                <Button
-                  className="w-full"
-                  disabled={profile.is_prod_requested}
-                  onClick={() => setProductionFormOpen(true)}
-                >
-                  {profile.is_prod_requested ? "Production request under review" : "Request production access"}
-                </Button>
               ) : null}
 
               {profile?.is_prod_approved ? (

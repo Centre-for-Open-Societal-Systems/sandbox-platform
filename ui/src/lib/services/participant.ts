@@ -37,6 +37,9 @@ interface SignupResult {
   otp_validity_seconds: number;
   /** True while the server sends no mail: the code is the fixed development one (000000). */
   is_fixed_otp?: boolean;
+  /** False while the server sends no mail: no code step, the account waits for admin approval. */
+  requires_verification?: boolean;
+  pending_approval?: boolean;
 }
 
 interface RegistrationState {
