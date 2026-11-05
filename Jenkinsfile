@@ -15,14 +15,16 @@
 // charts/oan-sandbox on main while there is no release, is deployed without a
 // sandbox-platform change. Other charts in oan-helm do not cause a redeploy.
 //
-// Jenkins setup: Pipeline from SCM, this repository, branch develop, script path
-// Jenkinsfile; an agent labelled `docker` with Docker and git. Credentials:
+// Jenkins setup: the sandbox.platform GitHub Organization Folder (or a Pipeline
+// from SCM, branch develop); an agent with Docker and git, labelled `docker`,
+// `vpn-agent` or `vpn-agent2`. Only develop pushes images and deploys: other
+// branches and PRs run Versions, Registry checks and Test. Credentials:
 //   aws-ecr         username = AWS access key id, password = secret access key;
 //                   permissions in deployment/jenkins/ecr-policy.json
 //   sandbox-vm-ssh  SSH username + private key for the VM (sandbox-platform-dev.pem)
 //   ghcr-creds      only with PUSH_GHCR: username + PAT (write:packages)
 pipeline {
-  agent { label 'docker' }
+  agent { label 'docker || vpn-agent || vpn-agent2' }
 
   options {
     disableConcurrentBuilds()
@@ -31,9 +33,10 @@ pipeline {
     buildDiscarder(logRotator(numToKeepStr: '30'))
   }
 
+  // Timers only on develop, so branch and PR jobs do not run every 15 minutes.
   triggers {
-    pollSCM('H/5 * * * *')     // sandbox-platform@develop (or use a GitHub webhook)
-    cron('H/15 * * * *')       // new oan-helm versions; also keeps the ECR pull Secret fresh
+    pollSCM(env.BRANCH_NAME == null || env.BRANCH_NAME == 'develop' ? 'H/5 * * * *' : '')
+    cron(env.BRANCH_NAME == null || env.BRANCH_NAME == 'develop' ? 'H/15 * * * *' : '')  // new oan-helm versions; keeps the ECR pull Secret fresh
   }
 
   parameters {
@@ -151,7 +154,12 @@ pipeline {
     }
 
     stage('Build and push') {
-      when { environment name: 'NEED_BUILD', value: 'true' }
+      when {
+        allOf {
+          environment name: 'NEED_BUILD', value: 'true'
+          expression { env.BRANCH_NAME == null || env.BRANCH_NAME == 'develop' }
+        }
+      }
       steps {
         sh '''
           api_latest="$ECR_REGISTRY/$ECR_REPO_PREFIX-api:develop"
@@ -174,6 +182,7 @@ pipeline {
         allOf {
           environment name: 'NEED_BUILD', value: 'true'
           expression { params.PUSH_GHCR }
+          expression { env.BRANCH_NAME == null || env.BRANCH_NAME == 'develop' }
         }
       }
       steps {
@@ -194,6 +203,8 @@ pipeline {
     }
 
     stage('Deploy') {
+      // Only develop deploys to the sandbox VM.
+      when { expression { env.BRANCH_NAME == null || env.BRANCH_NAME == 'develop' } }
       steps {
         withCredentials([
           sshUserPrivateKey(credentialsId: 'sandbox-vm-ssh', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER'),
