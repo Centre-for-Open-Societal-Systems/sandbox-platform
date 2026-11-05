@@ -233,7 +233,10 @@ pipeline {
           sshUserPrivateKey(credentialsId: 'sandbox-vm-ssh', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER'),
         ]) {
           sh '''
-            SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 $SSH_USER@$SSH_HOST"
+            # The VM's host keys are pinned in the repo (works on any OpenSSH; accept-new
+            # needs 7.6+ and vpn-agent2 has 7.4). If the VM is rebuilt, refresh the file:
+            #   ssh-keyscan -t ed25519,ecdsa,rsa $SSH_HOST > deployment/jenkins/known_hosts
+            SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$WORKSPACE/deployment/jenkins/known_hosts -o ServerAliveInterval=30 $SSH_USER@$SSH_HOST"
 
             # ECR passwords last 12 hours: every run (cron every 15 minutes) renews the
             # pull Secret, so pods restarted later can still pull.
