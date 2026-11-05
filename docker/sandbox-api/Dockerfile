@@ -11,7 +11,8 @@ WORKDIR /app
 
 # psycopg[binary] ships its own libpq, so no compiler or system libraries are needed.
 COPY backend/requirements.txt .
-RUN pip install -r requirements.txt
+# Long timeout and retries: slow or flaky links to PyPI otherwise fail the build.
+RUN pip install --default-timeout=120 --retries 10 -r requirements.txt
 
 COPY backend/app ./app
 COPY backend/alembic ./alembic
@@ -33,4 +34,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/oan/health')"
 
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+# Forwarding headers are handled by the app (TRUSTED_PROXIES), so uvicorn
+# reports the real socket peer instead of trusting any X-Forwarded-For.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers"]

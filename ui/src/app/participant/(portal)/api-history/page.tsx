@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { Check, Copy, Loader2, Play, RotateCcw, SlidersHorizontal } from "lucide-react";
 
+import { SourceBadge } from "@/components/apps/app-ui";
 import { PageBanner } from "@/components/layout/page-banner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -52,6 +53,7 @@ export default function ParticipantApiHistoryPage() {
         </div>
       ),
     },
+    { key: "source", header: "Source", render: (row) => <SourceBadge source={row.source} appName={row.app_name} /> },
     { key: "environment", header: "Environment", render: (row) => <EnvironmentChip value={row.environment} /> },
     {
       key: "status_code",
@@ -98,7 +100,7 @@ export default function ParticipantApiHistoryPage() {
         homeHref="/participant/dashboard"
         crumb="API History"
         title="API History"
-        description="Every call you have made through the sandbox console, with its outcome. Open a call to see the full request and response."
+        description="Your calls from the sandbox console (Try-it) and, when the gateway reports them, the calls your own systems make with your app keys (Direct). Open a call to see its details."
         image="/assets/home/bean-harvest.webp"
       />
 
@@ -121,7 +123,18 @@ export default function ParticipantApiHistoryPage() {
           </div>
         </div>
 
-        <div className="mt-5 grid gap-4 border-t border-hairline pt-5 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="mt-5 grid gap-4 border-t border-hairline pt-5 sm:grid-cols-2 lg:grid-cols-6">
+          <FilterField className="sm:max-w-none" label="Source" htmlFor="source">
+            <Select
+              id="source"
+              value={(list.filters.source as string) ?? ""}
+              onChange={(event) => list.setFilter("source", event.target.value)}
+            >
+              <option value="">All</option>
+              <option value="TRYIT">Try-it</option>
+              <option value="DIRECT">Direct (app key)</option>
+            </Select>
+          </FilterField>
           <FilterField className="sm:max-w-none" label="Environment" htmlFor="environment">
             <Select
               id="environment"
@@ -294,11 +307,19 @@ function CallDetailDialog({ logId, onClose }: { logId: number | null; onClose: (
             {tab === "overview" ? (
               <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
                 {[
+                  ["Source", detail.source === "DIRECT" ? "Direct call with an app key" : "Sandbox try-it"],
+                  ["App", detail.app_name],
                   ["Environment", detail.environment],
                   ["Requested at", formatDateTime(detail.request_time ?? detail.log_timestamp)],
                   ["Responded at", formatDateTime(detail.response_time)],
                   ["Transaction ID", detail.transaction_id],
                   ["Target URL", detail.target_url],
+                  ...(detail.source === "DIRECT"
+                    ? [
+                        ["Client IP", detail.client_ip],
+                        ["Upstream time", detail.upstream_latency_ms === null ? null : `${Math.round(detail.upstream_latency_ms)} ms`],
+                      ]
+                    : []),
                   ["Error", detail.error_message],
                 ].map(([label, value]) => (
                   <div key={label} className={label === "Target URL" || label === "Error" ? "sm:col-span-2" : undefined}>
@@ -307,6 +328,11 @@ function CallDetailDialog({ logId, onClose }: { logId: number | null; onClose: (
                   </div>
                 ))}
               </dl>
+            ) : detail.source === "DIRECT" && tab === "response" ? (
+              <p className="rounded-xl bg-surface-soft p-4 text-sm text-subtle">
+                Bodies of direct calls are not recorded; the gateway reports only the outcome
+                ({detail.response_size ?? 0} bytes returned).
+              </p>
             ) : (
               <pre className={CODE_BLOCK}>{tabText || "(empty)"}</pre>
             )}

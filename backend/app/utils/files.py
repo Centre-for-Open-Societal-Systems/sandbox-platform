@@ -54,6 +54,26 @@ def validate_upload(file: UploadFile, allowed: set[str] | None = None) -> None:
         )
 
 
+#: Leading bytes of the binary types served inline; a file whose content does
+#: not match its extension (e.g. HTML renamed to .pdf) is refused.
+_SIGNATURES: dict[str, tuple[bytes, ...]] = {
+    "pdf": (b"%PDF-",),
+    "png": (b"\x89PNG\r\n\x1a\n",),
+    "jpg": (b"\xff\xd8\xff",),
+    "jpeg": (b"\xff\xd8\xff",),
+    "webp": (b"RIFF",),
+    "xlsx": (b"PK\x03\x04",),
+}
+
+
+def _assert_content_matches(ext: str, contents: bytes) -> None:
+    signatures = _SIGNATURES.get(ext)
+    if signatures and not contents.startswith(signatures):
+        raise ValidationError(f"The file content is not a valid .{ext} file.")
+    if ext == "webp" and contents[8:12] != b"WEBP":
+        raise ValidationError("The file content is not a valid .webp file.")
+
+
 async def save_upload(
     file: UploadFile,
     folder: str = "misc",
@@ -62,12 +82,14 @@ async def save_upload(
     """Persist one upload and return its storage-relative path."""
     validate_upload(file, allowed)
 
-    contents = await file.read()
     max_bytes = settings.MAX_UPLOAD_MB * 1024 * 1024
+    # Read at most one byte past the limit instead of the whole body.
+    contents = await file.read(max_bytes + 1)
     if len(contents) > max_bytes:
         raise ValidationError(f"File exceeds the {settings.MAX_UPLOAD_MB} MB limit.")
     if not contents:
         raise ValidationError("Uploaded file is empty.")
+    _assert_content_matches(extension_of(file.filename or ""), contents)
 
     stored_name = f"{uuid.uuid4().hex}_{safe_filename(file.filename or 'file')}"
     relative = f"{folder.strip('/')}/{stored_name}"
@@ -79,7 +101,7 @@ async def save_upload(
     else:  # pragma: no cover - exercised only with cloud credentials present
         _put_object(relative, contents, file.content_type)
 
-    logger.info("Stored upload %s (%d bytes)", relative, len(contents))
+    logger.info("Stored upload in %s (%d bytes)", folder, len(contents))
     return StoredFile(
         path=relative,
         filename=file.filename or stored_name,
@@ -88,15 +110,28 @@ async def save_upload(
     )
 
 
+def normalise_upload_path(file_path: str) -> str:
+    """Canonical ``folder/sub/name`` form of a stored upload path.
+
+    Rejects anything that could name the same file another way (``./``,
+    ``..``, backslashes, empty segments), so access checks on the folder
+    prefix cannot be sidestepped.
+    """
+    parts = (file_path or "").strip().lstrip("/").split("/")
+    if not parts or any(p in ("", ".", "..") or "\\" in p or ":" in p for p in parts):
+        raise ValidationError("Invalid file path.")
+    return "/".join(parts)
+
+
 def read_file(relative_path: str) -> bytes:
     if settings.STORAGE_BACKEND == "local":
-        target = Path(settings.UPLOAD_DIR) / relative_path
-        if not target.exists():
-            raise ValidationError("File not found.")
-        # Reject traversal outside the upload root.
         root = Path(settings.UPLOAD_DIR).resolve()
-        if not target.resolve().is_relative_to(root):
+        target = (root / relative_path).resolve()
+        # Reject traversal outside the upload root before touching the disk.
+        if not target.is_relative_to(root):
             raise ValidationError("Invalid file path.")
+        if not target.is_file():
+            raise ValidationError("File not found.")
         return target.read_bytes()
     return _get_object(relative_path)  # pragma: no cover
 

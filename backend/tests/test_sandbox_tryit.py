@@ -4,7 +4,17 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from tests.test_catalog import OPENAPI_SPEC, _create_product
+
+
+@pytest.fixture(autouse=True)
+def _mock_responses_on(monkeypatch):
+    """These tests cover mock mode, which is off unless SANDBOX_MOCK_RESPONSES is set."""
+    from app.config.settings import settings
+
+    monkeypatch.setattr(settings, "SANDBOX_MOCK_RESPONSES", True)
 
 
 def _import_and_publish(client, admin_headers) -> dict[str, int]:
@@ -174,7 +184,7 @@ def _gateway(monkeypatch, sandbox_url="http://kong.test:8100"):
     from app.services import sandbox_service
 
     monkeypatch.setattr(settings, "GATEWAY_ENABLED", True)
-    monkeypatch.setattr(settings, "GATEWAY_SANDBOX_URL", sandbox_url)
+    monkeypatch.setattr(settings, "GATEWAY_UAT_URL", sandbox_url)
     calls = []
 
     def fake_call(method, url, headers, body):
@@ -217,8 +227,95 @@ def test_gateway_product_endpoints_are_called_on_the_gateway(
     assert result["request_url"] == "http://kong.test:8100/farmers/F-1"
     assert result["body"] == {"ok": True}
     assert calls[0][2]["Authorization"] == "Bearer t"
+    # The gateway can tell sandbox traffic apart and match it to API history.
+    assert calls[0][2]["User-Agent"].startswith("OAN-Sandbox/")
+    assert calls[0][2]["X-OAN-Sandbox-Transaction"] == result["transaction_id"]
     detail = _product_of(client, admin_headers, ids["/farmers/{farmerId}"])
-    assert detail["resolved_upstreams"]["SANDBOX"] == "http://kong.test:8100"
+    assert detail["resolved_upstreams"]["UAT"] == "http://kong.test:8100"
+
+
+def test_participants_see_the_public_gateway_url(
+    client, admin_headers, participant_headers, monkeypatch
+):
+    from app.config.settings import settings
+
+    calls = _gateway(monkeypatch, sandbox_url="http://host.docker.internal:9080")
+    monkeypatch.setattr(settings, "GATEWAY_UAT_PUBLIC_URL", "http://localhost:9080/")
+    ids = _import_and_publish(client, admin_headers)
+    endpoint_id = ids["/farmers/{farmerId}"]
+    _flag_product(client, admin_headers, _product_of(client, admin_headers, endpoint_id)["product_id"])
+
+    result = _try_it(client, participant_headers, endpoint_id, path_params={"farmerId": "F-1"})
+
+    # Called on the internal address, shown (and kept in history) with the public one.
+    assert calls[0][1] == "http://host.docker.internal:9080/farmers/F-1"
+    assert result["request_url"] == "http://localhost:9080/farmers/F-1"
+    history = client.post(
+        "/oan/participant/api-history", headers=participant_headers, json={}
+    ).json()["data"]["logs"]
+    assert history[0]["target_url"] == "http://localhost:9080/farmers/F-1"
+    sample = client.post(
+        "/oan/participant/code-sample",
+        headers=participant_headers,
+        json={"endpoint_id": endpoint_id, "language": "curl", "environment": "UAT"},
+    )
+    assert sample.status_code == 200, sample.text
+    assert "http://localhost:9080/farmers/{farmerId}" in sample.json()["data"]["code"]
+    assert "host.docker.internal" not in sample.json()["data"]["code"]
+
+
+def test_form_endpoints_are_called_with_a_form_and_samples_use_endpoint_headers(
+    client, admin_headers, participant_headers, monkeypatch
+):
+    import httpx
+
+    from app.config.settings import settings
+    from app.services import sandbox_service
+
+    monkeypatch.setattr(settings, "GATEWAY_ENABLED", True)
+    monkeypatch.setattr(settings, "GATEWAY_UAT_URL", "http://gw.test:9080")
+    sent = []
+
+    def handler(request):
+        sent.append(request)
+        return httpx.Response(200, json={"access_token": "t"})
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        sandbox_service.httpx,
+        "Client",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    ids = _import_and_publish(client, admin_headers)
+    endpoint_id = ids["/farmers/{farmerId}"]
+    _flag_product(client, admin_headers, _product_of(client, admin_headers, endpoint_id)["product_id"])
+    form = {"Content-Type": {"required": True, "value": "application/x-www-form-urlencoded"}}
+    csrf = {"X-CSRF-Token": {"required": True, "value": "<any random value>"}}
+    response = client.put(
+        "/oan/admin/endpoints",
+        headers=admin_headers,
+        json={"endpoint_id": endpoint_id, "header_params": {**form, **csrf}},
+    )
+    assert response.status_code == 200, response.text
+
+    _try_it(
+        client,
+        participant_headers,
+        endpoint_id,
+        path_params={"farmerId": "F-1"},
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        body={"grant_type": "password", "username": "staff"},
+    )
+
+    assert sent[0].content == b"grant_type=password&username=staff"
+    code = client.post(
+        "/oan/participant/code-sample",
+        headers=participant_headers,
+        json={"endpoint_id": endpoint_id, "language": "curl", "environment": "UAT"},
+    ).json()["data"]["code"]
+    assert "-H 'X-CSRF-Token: <any random value>'" in code
+    assert "application/json" not in code
+    assert "Bearer <access_token>" not in code
 
 
 def test_endpoints_not_on_the_gateway_stay_in_mock_mode(
@@ -245,7 +342,7 @@ def test_an_endpoint_url_overrides_the_gateway(
     client.put(
         "/oan/admin/endpoints",
         headers=admin_headers,
-        json={"endpoint_id": endpoint_id, "sandbox_api_url": "http://direct.test"},
+        json={"endpoint_id": endpoint_id, "uat_api_url": "http://direct.test"},
     )
 
     _try_it(client, participant_headers, endpoint_id, path_params={"farmerId": "F-1"})
@@ -344,3 +441,19 @@ def test_portal_endpoint_detail_includes_the_try_it_sample(
     ).json()["data"]
 
     assert detail["sample"] == sample
+
+
+def test_without_mock_responses_only_the_gateway_answers(
+    client, admin_headers, participant_headers, monkeypatch
+):
+    from app.config.settings import settings
+
+    monkeypatch.setattr(settings, "SANDBOX_MOCK_RESPONSES", False)
+    ids = _import_and_publish(client, admin_headers)
+    response = client.post(
+        "/oan/participant/try-it",
+        headers=participant_headers,
+        json={"endpoint_id": ids["/farmers/{farmerId}"], "path_params": {"farmerId": "F-1"}},
+    )
+    assert response.status_code == 400
+    assert "not served through the API gateway" in response.json()["message"]

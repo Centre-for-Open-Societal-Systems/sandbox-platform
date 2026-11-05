@@ -38,7 +38,6 @@ interface EndpointForm {
   method: string;
   api_type: string;
   description: string;
-  sandbox_api_url: string;
   uat_api_url: string;
   prod_api_url: string;
   sort_order: string;
@@ -53,7 +52,6 @@ const EMPTY_ENDPOINT: EndpointForm = {
   method: "POST",
   api_type: "NATIONAL",
   description: "",
-  sandbox_api_url: "",
   uat_api_url: "",
   prod_api_url: "",
   sort_order: "0",
@@ -70,7 +68,6 @@ function toForm(endpoint: EndpointDetail): EndpointForm {
     method: endpoint.method ?? "POST",
     api_type: endpoint.api_type ?? "NATIONAL",
     description: endpoint.description ?? "",
-    sandbox_api_url: endpoint.sandbox_api_url ?? "",
     uat_api_url: endpoint.uat_api_url ?? "",
     prod_api_url: endpoint.prod_api_url ?? "",
     sort_order: String(endpoint.sort_order ?? 0),
@@ -109,7 +106,6 @@ export default function ProductDetailsPage() {
         method: values.method,
         api_type: values.api_type,
         description: values.description || null,
-        sandbox_api_url: values.sandbox_api_url || null,
         uat_api_url: values.uat_api_url || null,
         prod_api_url: values.prod_api_url || null,
         sort_order: Number(values.sort_order) || 0,
@@ -359,17 +355,6 @@ export default function ProductDetailsPage() {
                 />
               </div>
 
-              <div className="space-y-2 sm:col-span-2">
-                <Label htmlFor="sandbox_api_url">Sandbox URL</Label>
-                <Input
-                  id="sandbox_api_url"
-                  className="font-mono text-xs"
-                  value={form.sandbox_api_url}
-                  onChange={(event) => setForm({ ...form, sandbox_api_url: event.target.value })}
-                  placeholder="Base URL, e.g. http://localhost:8000 (blank = API gateway or mock)"
-                />
-              </div>
-
               <div className="space-y-2">
                 <Label htmlFor="uat_api_url">UAT URL</Label>
                 <Input
@@ -377,6 +362,7 @@ export default function ProductDetailsPage() {
                   className="font-mono text-xs"
                   value={form.uat_api_url}
                   onChange={(event) => setForm({ ...form, uat_api_url: event.target.value })}
+                  placeholder="Base URL (blank = API gateway or mock)"
                 />
               </div>
 

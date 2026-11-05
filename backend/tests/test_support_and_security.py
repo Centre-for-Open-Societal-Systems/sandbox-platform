@@ -51,7 +51,8 @@ def _second_participant(db_session) -> Participant:
         is_email_verified=True,
         is_approved=1,
         is_activated=1,
-        is_sandbox_approved=True,
+        is_uat_requested=True,
+        is_uat_approved=True,
     )
     db_session.add(other)
     db_session.commit()
@@ -60,15 +61,16 @@ def _second_participant(db_session) -> Participant:
 
 # ------------------------------------------------------- password recovery
 def test_participant_can_reset_a_forgotten_password(
-    client, db_session, verified_participant
+    client, db_session, verified_participant, mailbox
 ):
     client.post(
         "/oan/participant/auth/forgot-password",
         json={"email_id": verified_participant.email_id},
     )
     db_session.refresh(verified_participant)
-    token = verified_participant.reset_pass_token
-    assert token
+    token = mailbox[-1]["values"]["token"]
+    # Only the hash is kept in the database.
+    assert token and verified_participant.reset_pass_token not in (None, token)
 
     reset = client.post(
         "/oan/participant/auth/reset-password",
@@ -84,21 +86,23 @@ def test_participant_can_reset_a_forgotten_password(
     assert reused.status_code == 404
 
 
-def test_admin_set_password_rejects_a_weak_password(client, db_session, master_admin):
+def test_admin_set_password_rejects_a_weak_password(
+    client, db_session, master_admin, mailbox
+):
     client.post(
         "/oan/admin/auth/forgot-password", json={"email_id": master_admin.email_id}
     )
-    db_session.refresh(master_admin)
+    token = mailbox[-1]["values"]["token"]
 
     weak = client.post(
         "/oan/admin/auth/set-password",
-        json={"token": master_admin.set_pass_token, "new_password": "alllowercase"},
+        json={"token": token, "new_password": "alllowercase"},
     )
     assert weak.status_code == 400
 
     strong = client.post(
         "/oan/admin/auth/set-password",
-        json={"token": master_admin.set_pass_token, "new_password": "Str0ng#Admin"},
+        json={"token": token, "new_password": "Str0ng#Admin"},
     )
     assert strong.status_code == 200, strong.text
 
@@ -275,7 +279,7 @@ def test_environment_request_keeps_the_production_details(
     response = client.post(
         "/oan/participant/promotion-requests",
         headers=participant_headers,
-        data={"target_environment": "UAT", "extra_data": json.dumps(details)},
+        data={"target_environment": "PRODUCTION", "extra_data": json.dumps(details)},
         files={"certificate": ("client.pem", b"-----BEGIN CERTIFICATE-----", "text/plain")},
     )
     assert response.status_code == 200, response.text
@@ -294,7 +298,7 @@ def test_environment_request_rejects_unknown_details_and_private_keys(
     unknown = client.post(
         "/oan/participant/promotion-requests",
         headers=participant_headers,
-        data={"target_environment": "UAT", "extra_data": json.dumps({"x": 1})},
+        data={"target_environment": "PRODUCTION", "extra_data": json.dumps({"x": 1})},
     )
     assert unknown.status_code == 400
     assert "extra" in unknown.json()["message"].lower()
@@ -302,7 +306,7 @@ def test_environment_request_rejects_unknown_details_and_private_keys(
     private_key = client.post(
         "/oan/participant/promotion-requests",
         headers=participant_headers,
-        data={"target_environment": "UAT"},
+        data={"target_environment": "PRODUCTION"},
         files={"certificate": ("client.key", b"secret", "text/plain")},
     )
     assert private_key.status_code == 400
@@ -332,7 +336,7 @@ def test_admin_detail_shows_documents_and_requests(
     client.post(
         "/oan/participant/promotion-requests",
         headers=participant_headers,
-        data={"target_environment": "UAT", "extra_data": json.dumps({"daily_volume": 10})},
+        data={"target_environment": "PRODUCTION", "extra_data": json.dumps({"daily_volume": 10})},
     )
     verified_participant.id_proof = "participants/id-proof/proof.pdf"
     db_session.commit()
@@ -344,7 +348,7 @@ def test_admin_detail_shows_documents_and_requests(
     assert detail.status_code == 200, detail.text
     data = detail.json()["data"]
     assert data["id_proof"] == "participants/id-proof/proof.pdf"
-    assert data["requests"][0]["target_environment"] == "UAT"
+    assert data["requests"][0]["target_environment"] == "PRODUCTION"
     assert data["requests"][0]["extra_data"] == {"daily_volume": 10}
 
     proof = client.get("/oan/files/participants/id-proof/proof.pdf", headers=admin_headers)
@@ -401,27 +405,100 @@ SIGNUP = {
 }
 
 
-def test_signup_uses_the_fixed_code_while_mail_is_off(client, db_session, monkeypatch):
+def _login(client, user: dict):
+    return client.post(
+        "/oan/participant/auth/login",
+        json={"email_id": user["email_id"], "password": user["password"]},
+    )
+
+
+def test_signup_while_mail_is_off_waits_for_admin_approval(
+    client, db_session, monkeypatch, admin_headers
+):
     monkeypatch.setattr(settings, "MAIL_ENABLED", False)
     signup = client.post("/oan/participant/auth/signup", json=SIGNUP)
     assert signup.status_code == 200, signup.text
     data = signup.json()["data"]
-    assert data["is_fixed_otp"] is True
+    assert data["requires_verification"] is False
+    assert data["pending_approval"] is True
 
-    verify = client.post(
-        "/oan/participant/auth/verify-email",
-        json={"unique_id": data["unique_id"], "otp": "000000"},
-    )
-    assert verify.status_code == 200, verify.text
+    user = db_session.query(Participant).filter_by(unique_id=data["unique_id"]).one()
+    assert user.is_email_verified is True
+    assert user.otp is None
+    assert user.is_uat_requested is True
+    assert user.is_uat_approved is False
 
-    resend_user = {**SIGNUP, "email_id": "second.dev@example.org", "mobile_number": "0911000222"}
-    second = client.post("/oan/participant/auth/signup", json=resend_user).json()["data"]
-    resend = client.post(
-        "/oan/participant/auth/resend-otp", json={"unique_id": second["unique_id"]}
+    refused = _login(client, SIGNUP)
+    assert refused.status_code == 401
+    assert "waiting for UAT approval" in refused.json()["message"]
+
+    pending = client.post(
+        "/oan/admin/participants/pending?environment=UAT", headers=admin_headers, json={}
+    ).json()["data"]["participants"]
+    assert [row["email_id"] for row in pending] == [SIGNUP["email_id"]]
+
+    approved = client.post(
+        "/oan/admin/participants/approve",
+        headers=admin_headers,
+        json={"participant_id": user.participant_id, "environment": "UAT"},
     )
-    assert resend.json()["data"]["is_fixed_otp"] is True
-    user = db_session.query(Participant).filter_by(unique_id=second["unique_id"]).one()
-    assert user.otp == "000000"
+    assert approved.status_code == 200, approved.text
+    login = _login(client, SIGNUP)
+    assert login.status_code == 200, login.text
+    assert login.json()["data"]["environments"] == ["UAT"]
+
+
+def test_admin_can_reject_a_registration_while_mail_is_off(
+    client, db_session, monkeypatch, admin_headers
+):
+    monkeypatch.setattr(settings, "MAIL_ENABLED", False)
+    data = client.post("/oan/participant/auth/signup", json=SIGNUP).json()["data"]
+    user = db_session.query(Participant).filter_by(unique_id=data["unique_id"]).one()
+
+    rejected = client.post(
+        "/oan/admin/participants/reject",
+        headers=admin_headers,
+        json={
+            "participant_id": user.participant_id,
+            "environment": "UAT",
+            "rejection_reason": "Company could not be confirmed.",
+        },
+    )
+    assert rejected.status_code == 200, rejected.text
+    refused = _login(client, SIGNUP)
+    assert refused.status_code == 401
+    assert refused.json()["message"] == "Company could not be confirmed."
+
+
+def test_unverified_signup_from_before_is_approvable_while_mail_is_off(
+    client, db_session, monkeypatch, admin_headers
+):
+    # Registered with the code flow, never received the code, then mail stayed off.
+    monkeypatch.setattr(settings, "MAIL_ENABLED", True)
+    monkeypatch.setattr(settings, "SMTP_HOST", "smtp.test")
+    monkeypatch.setattr(
+        "app.services.notification_service.send_email", lambda *args, **kwargs: True
+    )
+    data = client.post("/oan/participant/auth/signup", json=SIGNUP).json()["data"]
+    assert data["requires_verification"] is True
+    monkeypatch.setattr(settings, "MAIL_ENABLED", False)
+
+    refused = _login(client, SIGNUP)
+    assert "waiting for UAT approval" in refused.json()["message"]
+    pending = client.post(
+        "/oan/admin/participants/pending?environment=UAT", headers=admin_headers, json={}
+    ).json()["data"]["participants"]
+    user = db_session.query(Participant).filter_by(unique_id=data["unique_id"]).one()
+    assert [row["participant_id"] for row in pending] == [user.participant_id]
+
+    client.post(
+        "/oan/admin/participants/approve",
+        headers=admin_headers,
+        json={"participant_id": user.participant_id, "environment": "UAT"},
+    )
+    db_session.refresh(user)
+    assert user.is_email_verified is True
+    assert _login(client, SIGNUP).status_code == 200
 
 
 @pytest.mark.parametrize(
@@ -431,6 +508,7 @@ def test_real_codes_when_mail_is_on_or_in_production(
     client, db_session, monkeypatch, mail_enabled, env
 ):
     monkeypatch.setattr(settings, "MAIL_ENABLED", mail_enabled)
+    monkeypatch.setattr(settings, "SMTP_HOST", "smtp.test")
     monkeypatch.setattr(settings, "ENV", env)
     monkeypatch.setattr(
         "app.services.participant_auth_service.send_otp", lambda *args, **kwargs: True
@@ -459,7 +537,10 @@ def _reset_with_code(client, path, email, otp="000000", password="Fresh#Pass2026
 def test_participant_resets_password_with_the_fixed_code(
     client, monkeypatch, verified_participant
 ):
+    # Developer machine only.
     monkeypatch.setattr(settings, "MAIL_ENABLED", False)
+    monkeypatch.setattr(settings, "ENV", "local")
+    monkeypatch.setattr(settings, "DEV_FIXED_OTP", "000000")
     path = "/oan/participant/auth/reset-password"
     email = verified_participant.email_id
 
@@ -488,22 +569,39 @@ def test_reset_code_is_refused_once_mail_is_on(client, monkeypatch, verified_par
     assert response.status_code == 400
 
 
-def test_admin_resets_password_with_the_fixed_code(client, monkeypatch, master_admin):
+@pytest.mark.parametrize("env", ["local", "sandbox"])
+def test_admin_password_is_never_reset_with_a_code(client, monkeypatch, master_admin, env):
+    """The fixed code used to let anyone take over the master administrator."""
     monkeypatch.setattr(settings, "MAIL_ENABLED", False)
+    monkeypatch.setattr(settings, "ENV", env)
+    monkeypatch.setattr(settings, "DEV_FIXED_OTP", "000000")
     forgot = client.post(
         "/oan/admin/auth/forgot-password", json={"email_id": master_admin.email_id}
     )
-    assert forgot.json()["data"]["is_fixed_otp"] is True
+    assert forgot.json()["data"]["is_fixed_otp"] is False
 
     response = _reset_with_code(
         client, "/oan/admin/auth/set-password", master_admin.email_id
     )
-    assert response.status_code == 200, response.text
+    assert response.status_code == 400
     login = client.post(
         "/oan/admin/auth/login",
         json={"username": master_admin.email_id, "password": "Fresh#Pass2026"},
     )
-    assert login.status_code == 200, login.text
+    assert login.status_code == 401
+
+
+def test_participant_fixed_code_is_off_outside_a_developer_machine(
+    client, monkeypatch, verified_participant
+):
+    monkeypatch.setattr(settings, "MAIL_ENABLED", False)
+    monkeypatch.setattr(settings, "ENV", "sandbox")
+    monkeypatch.setattr(settings, "DEV_FIXED_OTP", "000000")
+    email = verified_participant.email_id
+    forgot = client.post("/oan/participant/auth/forgot-password", json={"email_id": email})
+    assert forgot.json()["data"]["is_fixed_otp"] is False
+    response = _reset_with_code(client, "/oan/participant/auth/reset-password", email)
+    assert response.status_code == 400
 
 
 def test_reset_needs_a_token_or_email_and_code(client):

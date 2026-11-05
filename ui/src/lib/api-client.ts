@@ -98,9 +98,72 @@ function handleUnauthorized(audience: Audience): boolean {
   return redirecting;
 }
 
+let refreshing: Promise<boolean> | null = null;
+
+/**
+ * A participant's access token is short-lived (Keycloak sign-in: minutes). On a
+ * 401 the session is refreshed once with its refresh token and the request is
+ * sent again; concurrent 401s share one refresh. Returns true when a new access
+ * token is in the session.
+ */
+function refreshParticipant(): Promise<boolean> {
+  const session = participantSession.get();
+  if (!session?.refresh_token || !session.auth_key) {
+    return Promise.resolve(false);
+  }
+  refreshing ??= (async () => {
+    try {
+      const response = await fetch(buildUrl("/participant/auth/refresh"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-auth-key": session.auth_key },
+        body: JSON.stringify({ refresh_token: session.refresh_token }),
+        cache: "no-store",
+      });
+      const payload = (await response.json().catch(() => null)) as Envelope<{
+        access_token: string;
+        refresh_token?: string;
+        token_expiry: number;
+        token_issued_at: string;
+      }> | null;
+      if (!response.ok || !payload || payload.status === false || !payload.data?.access_token) {
+        return false;
+      }
+      const current = participantSession.get();
+      if (!current || current.auth_key !== session.auth_key) {
+        return false;
+      }
+      participantSession.set({
+        ...current,
+        access_token: payload.data.access_token,
+        // Keycloak rotates refresh tokens: keep the new one.
+        refresh_token: payload.data.refresh_token ?? current.refresh_token,
+        token_expiry: payload.data.token_expiry,
+        token_issued_at: payload.data.token_issued_at,
+      });
+      return true;
+    } catch {
+      return false;
+    } finally {
+      refreshing = null;
+    }
+  })();
+  return refreshing;
+}
+
 /** Keeps the caller waiting while the page navigates away, so no error flashes on screen. */
 function untilNavigation<T>(): Promise<T> {
   return new Promise<T>(() => {});
+}
+
+/** fetch, refreshing a participant session once on 401 and sending the request again. */
+async function send(audience: Audience, call: () => Promise<Response>): Promise<Response> {
+  const response = await call();
+  if (response.status === 401 && audience === "participant" && participantSession.isSignedIn()) {
+    if (await refreshParticipant()) {
+      return call();
+    }
+  }
+  return response;
 }
 
 async function request<T>(
@@ -114,13 +177,15 @@ async function request<T>(
 
   let response: Response;
   try {
-    response = await fetch(buildUrl(path, options.query), {
-      method,
-      headers: buildHeaders(options, body !== undefined && !isMultipart),
-      body: isMultipart ? options.formData : body === undefined ? undefined : JSON.stringify(body),
-      signal: options.signal,
-      cache: options.cache ?? "no-store",
-    });
+    response = await send(audience, () =>
+      fetch(buildUrl(path, options.query), {
+        method,
+        headers: buildHeaders(options, body !== undefined && !isMultipart),
+        body: isMultipart ? options.formData : body === undefined ? undefined : JSON.stringify(body),
+        signal: options.signal,
+        cache: options.cache ?? "no-store",
+      }),
+    );
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       throw error;
@@ -155,11 +220,13 @@ async function download(
   body: unknown,
   options: RequestOptions = {},
 ): Promise<Blob> {
-  const response = await fetch(buildUrl(path, options.query), {
-    method: "POST",
-    headers: buildHeaders(options, true),
-    body: JSON.stringify(body),
-  });
+  const response = await send(options.audience ?? "public", () =>
+    fetch(buildUrl(path, options.query), {
+      method: "POST",
+      headers: buildHeaders(options, true),
+      body: JSON.stringify(body),
+    }),
+  );
 
   if (response.status === 401 && handleUnauthorized(options.audience ?? "public")) {
     return untilNavigation<Blob>();
@@ -172,11 +239,13 @@ async function download(
 
 /** Fetch an uploaded file (`/files/...`) with the caller's session headers. */
 async function file(path: string, options: RequestOptions = {}): Promise<Blob> {
-  const response = await fetch(buildUrl(path, options.query), {
-    method: "GET",
-    headers: buildHeaders(options, false),
-    cache: "no-store",
-  });
+  const response = await send(options.audience ?? "public", () =>
+    fetch(buildUrl(path, options.query), {
+      method: "GET",
+      headers: buildHeaders(options, false),
+      cache: "no-store",
+    }),
+  );
   if (response.status === 401 && handleUnauthorized(options.audience ?? "public")) {
     return untilNavigation<Blob>();
   }

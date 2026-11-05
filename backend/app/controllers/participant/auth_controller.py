@@ -42,16 +42,19 @@ def check_email(payload: CheckEmailRequest, db: DbSession):
 
 @router.post("/signup")
 def signup(payload: SignupRequest, db: DbSession):
-    return ok(
-        "Account created. Check your email for the verification code.",
-        participant_auth_service.signup(db, payload),
-    )
+    result = participant_auth_service.signup(db, payload)
+    if result["pending_approval"]:
+        return ok(
+            "Registration submitted. You can login once an administrator approves it.",
+            result,
+        )
+    return ok("Account created. Check your email for the verification code.", result)
 
 
 @router.post("/verify-email")
 def verify_email(payload: VerifyEmailRequest, db: DbSession):
     return ok(
-        "Email verified. Your sandbox access is active.",
+        "Email verified. Your registration is waiting for UAT approval.",
         participant_auth_service.verify_email(db, payload.unique_id, payload.otp),
     )
 
@@ -138,7 +141,11 @@ def change_password(
     payload: ChangePasswordRequest, current: CurrentParticipant, db: DbSession
 ):
     participant_auth_service.change_password(
-        db, current.participant, payload.old_password, payload.new_password
+        db,
+        current.participant,
+        payload.old_password,
+        payload.new_password,
+        current_auth_key=current.auth_key,
     )
     return ok("Password changed successfully.")
 

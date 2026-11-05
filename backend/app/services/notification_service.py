@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app.config.settings import settings
 from app.core.logging import get_logger
 from app.repositories.content_repository import EmailTemplateRepository
-from app.utils.common import render_template
+from app.utils.common import extract_placeholders, render_template
 
 logger = get_logger(__name__)
 
@@ -31,6 +31,8 @@ class TemplateCode:
     PARTICIPANT_RESET_PASSWORD = "PARTICIPANT_RESET_PASSWORD"
     PROMOTION_APPROVED = "PROMOTION_APPROVED"
     PROMOTION_REJECTED = "PROMOTION_REJECTED"
+    APP_APPROVED = "APP_APPROVED"
+    APP_REJECTED = "APP_REJECTED"
     ADMIN_INVITE = "ADMIN_INVITE"
     ADMIN_RESET_PASSWORD = "ADMIN_RESET_PASSWORD"
     QUERY_RESPONSE = "QUERY_RESPONSE"
@@ -48,9 +50,8 @@ def send_email(
         return False
 
     if not settings.MAIL_ENABLED or not settings.SMTP_HOST:
-        logger.info(
-            "[mail disabled] to=%s subject=%s\n%s", to_email, subject, body_html[:500]
-        )
+        # Never the body: it carries reset links and codes.
+        logger.info("[mail disabled] to=%s subject=%s (not sent)", to_email, subject)
         return False
 
     message = EmailMessage()
@@ -75,6 +76,37 @@ def send_email(
         return False
 
 
+#: Example values for previews and test mails, one per placeholder the services fill in.
+SAMPLE_VARIABLES: dict[str, Any] = {
+    "name": "Abebe Kebede",
+    "otp": "482915",
+    "validity_minutes": 10,
+    "environment": "UAT",
+    "reason": "The organisation document could not be verified.",
+    "token": "sample-token-0000",
+    "subject": "Question about the Farmer Registry API",
+    "response": "Thank you for your question. The endpoint now returns the district code as well.",
+}
+
+
+def sample_variables(text: str | None = None) -> dict[str, Any]:
+    """Sample values for every placeholder (unknown ones show as ``[name]``)."""
+    values = {"portal_url": settings.portal_url, **SAMPLE_VARIABLES}
+    for key in extract_placeholders(text):
+        values.setdefault(key, f"[{key}]")
+    return values
+
+
+def render_preview(subject: str | None, body: str | None) -> dict[str, Any]:
+    text = f"{subject or ''} {body or ''}"
+    values = sample_variables(text)
+    return {
+        "subject": render_template(subject, values),
+        "body_html": render_template(body, values, escape_html=True),
+        "placeholders": extract_placeholders(text),
+    }
+
+
 def send_templated(
     db: Session,
     template_code: str,
@@ -84,16 +116,24 @@ def send_templated(
 ) -> bool:
     """Render a stored template and send it."""
     template = EmailTemplateRepository(db).get_by_code(template_code, locale)
-    if template is None:
-        logger.warning("Email template '%s' is missing; nothing sent.", template_code)
-        return False
+    if template is not None:
+        subject_text, body_text = template.subject, template.body_text
+    else:
+        # A database seeded before this template existed: use the built-in text.
+        from app.seeds.reference_data import EMAIL_TEMPLATE_SEEDS
+
+        default = next((t for t in EMAIL_TEMPLATE_SEEDS if t[0] == template_code), None)
+        if default is None:
+            logger.warning("Email template '%s' is missing; nothing sent.", template_code)
+            return False
+        subject_text, body_text = default[2], default[3]
 
     merged = {
         "portal_url": settings.portal_url,
         **variables,
     }
-    subject = render_template(template.subject, merged)
-    body = render_template(template.body_text, merged)
+    subject = render_template(subject_text, merged)
+    body = render_template(body_text, merged, escape_html=True)
     return send_email(to_email, subject, body)
 
 
@@ -137,8 +177,8 @@ def send_otp(
             or delivered
         )
     if not delivered:
-        # Surfaced so a developer can complete signup without a mail server.
-        logger.info("OTP for %s / %s is %s", email, mobile_number, otp)
+        # The code itself is never logged: anyone reading the logs could use it.
+        logger.warning("Verification code for %s could not be delivered.", email or mobile_number)
     return delivered
 
 

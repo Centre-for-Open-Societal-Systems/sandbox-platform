@@ -1,0 +1,39 @@
+# oan-partner-gateway: the partner APIs (Farmer Registry staff API) behind APISIX, for
+# apps created in the OAN sandbox. Every call carries the app's access token in
+# X-Partner-Token: a Keycloak client-credentials token (client_id = API key, client_secret
+# = API secret) from the realm the sandbox uses (KEYCLOAK_REALM). The routes check its
+# signature (realm JWKS), iss, exp, the environment role and that this route is in the
+# token's oan_routes (the app's approved API products).
+
+ingressClassName: apisix
+
+# Required: public host names partners call (Postman, their servers). Apps share the
+# gateway and are told apart by host.
+hosts: []
+
+# APISIX terminates TLS for `hosts` with this Secret (tls.crt, tls.key) in the release
+# namespace (ApisixTls). Empty = no ApisixTls (the certificate is served some other way).
+tls:
+  secretName: ""
+
+# The sandbox's Keycloak realm, exactly as Keycloak writes it into tokens (`iss`).
+keycloak:
+  issuer: ""
+  # Where APISIX reads the realm's discovery document. Empty = <issuer>/.well-known/openid-configuration.
+  discovery: ""
+
+# Role in the token's oan_environments this gateway requires: uat, or production on a
+# production gateway.
+environmentRole: uat
+
+# Farmer Registry staff API (OpenG2P) and the Keycloak realm its own staff tokens come from
+# (/farmer-registry/auth/token).
+farmerRegistry:
+  upstreamHost: ""
+  keycloakHost: ""
+  keycloakRealm: staff
+
+# Redis for limit-count counters shared by all APISIX pods. Empty = counted per pod.
+redis:
+  host: ""
+  port: 6379

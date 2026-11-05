@@ -4,6 +4,8 @@ import { api } from "@/lib/api-client";
 import type {
   AdminArea,
   Country,
+  EmailTemplate,
+  EmailTemplatePreview,
   Faq,
   FaqGroup,
   HomeBlock,
@@ -134,13 +136,9 @@ export const contentApi = {
   deleteTerm: (tableId: number) => api.delete<null>(`/admin/terms/${tableId}`, OPTIONS),
 
   listEmailTemplates: async (query: ListQuery) => {
-    const page = await api.post<PagedRows<Record<string, unknown>>>(
-      "/admin/email-templates/list",
-      query,
-      OPTIONS,
-    );
+    const page = await api.post<PagedRows<EmailTemplate>>("/admin/email-templates/list", query, OPTIONS);
     return {
-      templates: rows<Record<string, unknown>>(page, "templates"),
+      templates: rows<EmailTemplate>(page, "templates"),
       pagination: page.pagination,
     };
   },
@@ -150,6 +148,10 @@ export const contentApi = {
 
   sendTestMail: (payload: Record<string, unknown>) =>
     api.post<{ sent: boolean }>("/admin/email-templates/test", payload, OPTIONS),
+
+  /** Subject and body as the recipient sees them, filled with sample values (works on unsaved text). */
+  previewEmailTemplate: (payload: { subject: string; body_text: string }) =>
+    api.post<EmailTemplatePreview>("/admin/email-templates/preview", payload, OPTIONS),
 
   listHomeBlocks: (locale = "en") =>
     api.get<HomeBlock[]>("/admin/home-blocks", { ...OPTIONS, query: { locale } }),

@@ -63,12 +63,12 @@ export default function ParticipantDashboard() {
   const callsTotal = data?.api_calls_period ?? 0;
   const profileComplete = data?.is_profile_complete ?? Boolean(session?.is_profile_complete);
 
-  function accessState(environment: "SANDBOX" | "UAT" | "PRODUCTION"): AccessState {
+  function accessState(environment: "UAT" | "PRODUCTION"): AccessState {
     if (environments.includes(environment)) {
       return "active";
     }
-    const previous = environment === "PRODUCTION" ? "UAT" : "SANDBOX";
-    if (!environments.includes(previous)) {
+    // UAT is approved before the first sign-in, so only production is asked for here.
+    if (environment === "UAT" || !environments.includes("UAT")) {
       return "locked";
     }
     const request = latestRequest(requests, environment);
@@ -84,7 +84,7 @@ export default function ParticipantDashboard() {
   const [productionFormOpen, setProductionFormOpen] = React.useState(false);
 
   const requestPromotion = useMutation({
-    /** UAT is one click; production sends the Move to Production form. */
+    /** Production sends the Move to Production form. */
     mutationFn: ({ formData }: { environment: string; formData: FormData }) =>
       participantApi.requestPromotion(formData),
     // A toast, not an inline notice: the button sits well below the top of the page.
@@ -96,21 +96,11 @@ export default function ParticipantDashboard() {
     onError: (error: Error) => notify(error.message, "error"),
   });
 
-  function requestAccess(environment: string) {
-    if (environment === "PRODUCTION") {
-      setProductionFormOpen(true);
-      return;
-    }
-    const formData = new FormData();
-    formData.append("target_environment", environment);
-    requestPromotion.mutate({ environment, formData });
-  }
-
   const steps = [
     { label: "Verify your email", done: true, href: undefined },
-    { label: "Complete your organisation profile", done: Boolean(session?.is_profile_complete), href: "/participant/profile" },
-    { label: "Make your first sandbox call", done: callsTotal > 0, href: "/participant/catalog" },
     { label: "Get UAT access", done: environments.includes("UAT"), href: undefined },
+    { label: "Make your first UAT call", done: callsTotal > 0, href: "/participant/catalog" },
+    { label: "Complete your organisation profile", done: profileComplete, href: "/participant/profile" },
     { label: "Go live in production", done: environments.includes("PRODUCTION"), href: undefined },
   ];
   const completed = steps.filter((step) => step.done).length;
@@ -194,7 +184,7 @@ export default function ParticipantDashboard() {
         {/* ------------------------------------------------ environment access */}
         <Panel title="Environment access">
           <ul className="flex flex-col gap-3">
-            {(["SANDBOX", "UAT", "PRODUCTION"] as const).map((environment) => {
+            {(["UAT", "PRODUCTION"] as const).map((environment) => {
               const state = accessState(environment);
               const badge = ACCESS_BADGE[state];
               const request = latestRequest(requests, environment);
@@ -216,12 +206,12 @@ export default function ParticipantDashboard() {
                   ) : null}
                   {state === "locked" ? (
                     <p className="mt-2 text-xs text-subtle">
-                      Available after {environment === "PRODUCTION" ? "UAT" : "sandbox"} access.
+                      {environment === "PRODUCTION" ? "Available after UAT access." : "Waiting for administrator approval."}
                     </p>
                   ) : null}
-                  {(state === "available" || state === "rejected") && environment === "UAT" && !profileComplete ? (
+                  {(state === "available" || state === "rejected") && !profileComplete ? (
                     <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5">
-                      <p className="text-xs text-amber-800">Complete your organisation profile before requesting UAT access.</p>
+                      <p className="text-xs text-amber-800">Complete your organisation profile before requesting production access.</p>
                       <Link
                         href="/participant/profile"
                         className="mt-1.5 inline-flex items-center gap-1 text-sm font-semibold text-brand-bright hover:underline"
@@ -235,7 +225,7 @@ export default function ParticipantDashboard() {
                       size="sm"
                       className="mt-3 w-full"
                       loading={requestPromotion.isPending && requestPromotion.variables?.environment === environment}
-                      onClick={() => requestAccess(environment)}
+                      onClick={() => setProductionFormOpen(true)}
                     >
                       {state === "rejected" ? "Re-apply" : `Request ${environment} access`}
                     </Button>

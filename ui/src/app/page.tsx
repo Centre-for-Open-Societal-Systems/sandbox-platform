@@ -51,7 +51,7 @@ const HIGHLIGHTS = [
   { icon: FlaskConical, title: "Synthetic Data", body: "Realistic records, no real farmers" },
   { icon: Code2, title: "Live Try-It Console", body: "Call every end-point from the browser" },
   { icon: ShieldCheck, title: "Consent First", body: "Built on a recorded lawful basis" },
-  { icon: Rocket, title: "Path to Production", body: "Sandbox → UAT → Production" },
+  { icon: Rocket, title: "Path to Production", body: "UAT → Production" },
 ];
 
 const ABOUT_POINTS = [
@@ -122,14 +122,14 @@ const DEFAULT_FAQS: Array<Pick<Faq, "faq_id" | "question" | "answer">> = [
   },
   {
     faq_id: -4,
-    question: "How do I move from sandbox to production?",
+    question: "How do I move from UAT to production?",
     answer:
-      "When your integration works in the sandbox, request UAT access from your dashboard. After validation in UAT, submit a production request for approval.",
+      "Your registration is reviewed for UAT access. When your integration works in UAT, complete your organisation profile and submit a production request for approval.",
   },
   {
     faq_id: -5,
-    question: "Does sandbox access cost anything?",
-    answer: "No. Sandbox access is free for approved participants.",
+    question: "Does UAT access cost anything?",
+    answer: "No. UAT access is free for approved participants.",
   },
 ];
 

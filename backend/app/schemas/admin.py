@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.schemas.common import ListQuery, ORMModel
 from app.utils.validators import validate_password_strength
@@ -64,19 +64,12 @@ class ForgotPasswordRequest(BaseModel):
 
 
 class SetPasswordRequest(BaseModel):
-    #: Emailed link token. Without mail (development) send email_id + otp instead.
-    token: str | None = None
-    email_id: EmailStr | None = None
-    otp: str | None = Field(None, min_length=4, max_length=10)
+    #: Emailed link token (invitation or reset). Administrators have no
+    #: code-based reset; without mail use scripts/set_admin_password.py.
+    token: str = Field(..., min_length=16, max_length=255)
     new_password: str = Field(..., min_length=8, max_length=128)
 
     _check_password = field_validator("new_password")(validate_password_strength)
-
-    @model_validator(mode="after")
-    def _token_or_code(self):
-        if not self.token and not (self.email_id and self.otp):
-            raise ValueError("Send the reset token, or the email address and code.")
-        return self
 
 
 class CheckUsernameRequest(BaseModel):
@@ -168,6 +161,21 @@ class AdminUserOut(ORMModel):
     added_date: datetime | None = None
 
 
+class AdminInviteOut(BaseModel):
+    """A fresh invitation: the set-password link, for the inviting administrator
+    to pass on (e.g. while mail is off). Valid for 24 hours, once; a newer
+    invitation replaces it."""
+
+    invite_url: str
+    #: The invitation was also emailed (mail is on).
+    emailed: bool
+
+
+class AdminUserCreated(AdminUserOut):
+    #: Set when the user was invited (no password given at creation).
+    invitation: AdminInviteOut | None = None
+
+
 class AdminUserListQuery(ListQuery):
     role_id: int | None = None
     is_enabled: bool | None = None
@@ -179,7 +187,6 @@ class DashboardCounters(BaseModel):
     total_participants: int = 0
     #: Signed up but never entered the emailed verification code.
     unverified_participants: int = 0
-    sandbox_participants: int = 0
     uat_pending: int = 0
     uat_participants: int = 0
     prod_pending: int = 0
@@ -199,7 +206,7 @@ class DashboardSeriesPoint(BaseModel):
 
 
 class DashboardApiHealth(BaseModel):
-    """Sandbox traffic quality over the dashboard trend window."""
+    """Try-it and app traffic quality over the dashboard trend window."""
 
     total_calls: int = 0
     success: int = 0

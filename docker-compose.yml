@@ -2,13 +2,13 @@
 #
 #   browser --> web (Next.js) :3005 --> api (FastAPI) :8010 --> postgres :5433 (host) / 5432 (network)
 #                                          |
-#                                          +--> existing APISIX gateway (GATEWAY_SANDBOX_URL)
+#                                          +--> existing APISIX gateway (GATEWAY_UAT_URL)
 #
 # The API gateway is NOT part of this stack: the API calls the Apache APISIX
 # already deployed for the environment. (For a laptop without one, run a local
 # gateway on its own - see DEPLOYMENT.md.)
 #
-#   cp .env.example .env      # passwords, secrets, public URLs, GATEWAY_SANDBOX_URL
+#   cp .env.example .env      # passwords, secrets, public URLs, GATEWAY_UAT_URL
 #   docker compose up -d --build
 #
 # On the first start PostgreSQL loads deployment/postgres/initdb/*.sql.gz (the
@@ -72,24 +72,83 @@ services:
       SMTP_FROM: ${SMTP_FROM:-no-reply@openagrinet.org}
       SMTP_TLS: ${SMTP_TLS:-true}
       # Sign-up code used while mail is off (see .env.example).
-      DEV_FIXED_OTP: ${DEV_FIXED_OTP-000000}
+      DEV_FIXED_OTP: ${DEV_FIXED_OTP:-}
       GATEWAY_ENABLED: ${GATEWAY_ENABLED:-true}
       # The APISIX proxy already deployed for this environment (not started here).
-      GATEWAY_SANDBOX_URL: ${GATEWAY_SANDBOX_URL:?set GATEWAY_SANDBOX_URL to the deployed APISIX proxy URL in .env}
-      GATEWAY_UAT_URL: ${GATEWAY_UAT_URL:-}
+      GATEWAY_UAT_URL: ${GATEWAY_UAT_URL:?set GATEWAY_UAT_URL to the deployed APISIX proxy URL in .env}
       GATEWAY_PROD_URL: ${GATEWAY_PROD_URL:-}
+      # Same gateway as partners reach it (code samples, try-it URL); empty = the URL above.
+      GATEWAY_UAT_PUBLIC_URL: ${GATEWAY_UAT_PUBLIC_URL:-}
+      GATEWAY_PROD_PUBLIC_URL: ${GATEWAY_PROD_PUBLIC_URL:-}
+      # "Pull from gateway" in the console (off unless set; see .env.example).
+      GATEWAY_SYNC_ENABLED: ${GATEWAY_SYNC_ENABLED:-false}
+      GATEWAY_TYPE: ${GATEWAY_TYPE:-apisix}
+      GATEWAY_ADMIN_URL: ${GATEWAY_ADMIN_URL:-}
+      GATEWAY_ADMIN_TOKEN: ${GATEWAY_ADMIN_TOKEN:-}
+      # Participant apps -> gateway consumers (needs write access on the Admin API).
+      GATEWAY_APP_SYNC_ENABLED: ${GATEWAY_APP_SYNC_ENABLED:-false}
+      GATEWAY_APP_KEY_HEADER: ${GATEWAY_APP_KEY_HEADER:-apikey}
+      GATEWAY_PARTNER_AUTH: ${GATEWAY_PARTNER_AUTH:-apikey}
+      GATEWAY_PARTNER_TOKEN_HEADER: ${GATEWAY_PARTNER_TOKEN_HEADER:-X-Partner-Token}
+      APP_CREDENTIAL_ENCRYPTION_KEY: ${APP_CREDENTIAL_ENCRYPTION_KEY:-}
+      MAX_APPS_PER_PARTICIPANT: ${MAX_APPS_PER_PARTICIPANT:-10}
+      MAX_ACTIVE_CREDENTIALS_PER_APP: ${MAX_ACTIVE_CREDENTIALS_PER_APP:-2}
+      MAX_ALLOWED_IPS_PER_APP: ${MAX_ALLOWED_IPS_PER_APP:-20}
+      # Gateway logs callback and rate limits (see .env.example).
+      GATEWAY_LOG_INGEST_ENABLED: ${GATEWAY_LOG_INGEST_ENABLED:-false}
+      GATEWAY_LOG_INGEST_URL: ${GATEWAY_LOG_INGEST_URL:-}
+      GATEWAY_LOG_INGEST_TOKEN: ${GATEWAY_LOG_INGEST_TOKEN:-}
+      GATEWAY_LOG_FLUSH_SECONDS: ${GATEWAY_LOG_FLUSH_SECONDS:-5}
+      GATEWAY_RATE_LIMIT_ENABLED: ${GATEWAY_RATE_LIMIT_ENABLED:-false}
+      GATEWAY_RATE_LIMIT_POLICY: ${GATEWAY_RATE_LIMIT_POLICY:-local}
+      GATEWAY_RATE_LIMIT_REDIS_HOST: ${GATEWAY_RATE_LIMIT_REDIS_HOST:-}
+      GATEWAY_RATE_LIMIT_REDIS_PORT: ${GATEWAY_RATE_LIMIT_REDIS_PORT:-6379}
+      GATEWAY_RATE_LIMIT_REDIS_PASSWORD: ${GATEWAY_RATE_LIMIT_REDIS_PASSWORD:-}
+      # Partner OAuth2 clients in Keycloak (see .env.example).
+      KEYCLOAK_PROVISIONING_ENABLED: ${KEYCLOAK_PROVISIONING_ENABLED:-false}
+      KEYCLOAK_URL: ${KEYCLOAK_URL:-}
+      KEYCLOAK_PUBLIC_URL: ${KEYCLOAK_PUBLIC_URL:-}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-oan-partners}
+      KEYCLOAK_ADMIN_CLIENT_ID: ${KEYCLOAK_ADMIN_CLIENT_ID:-oan-sandbox-provisioner}
+      KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET:-}
+      KEYCLOAK_ENVIRONMENTS: ${KEYCLOAK_ENVIRONMENTS:-UAT,PRODUCTION}
+      KEYCLOAK_PARTNER_CLIENT_ID: ${KEYCLOAK_PARTNER_CLIENT_ID:-oan-partner-api}
+      KEYCLOAK_PORTAL_CLIENT_ID: ${KEYCLOAK_PORTAL_CLIENT_ID:-}
+      KEYCLOAK_PORTAL_ROLE: ${KEYCLOAK_PORTAL_ROLE:-PARTNER_OPERATOR}
+      KEYCLOAK_PARTNER_ID_ATTRIBUTE: ${KEYCLOAK_PARTNER_ID_ATTRIBUTE:-partner_id}
+      PARTNER_ID_PREFIX: ${PARTNER_ID_PREFIX:-oan-p-}
+      PARTICIPANT_AUTH_PROVIDER: ${PARTICIPANT_AUTH_PROVIDER:-local}
+      KEYCLOAK_LOGIN_CLIENT_ID: ${KEYCLOAK_LOGIN_CLIENT_ID:-oan-sandbox-portal}
+      KEYCLOAK_LOGIN_CLIENT_SECRET: ${KEYCLOAK_LOGIN_CLIENT_SECRET:-}
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-}
+      KEYCLOAK_JWKS_URL: ${KEYCLOAK_JWKS_URL:-}
+      KEYCLOAK_TOKEN_LEEWAY_SECONDS: ${KEYCLOAK_TOKEN_LEEWAY_SECONDS:-30}
+      KEYCLOAK_JWKS_CACHE_SECONDS: ${KEYCLOAK_JWKS_CACHE_SECONDS:-300}
+      PM_PROVISIONING_ENABLED: ${PM_PROVISIONING_ENABLED:-false}
+      PM_STAFF_API_URL: ${PM_STAFF_API_URL:-}
+      PM_TOKEN_URL: ${PM_TOKEN_URL:-}
+      PM_CLIENT_ID: ${PM_CLIENT_ID:-oan-sandbox-pm}
+      PM_CLIENT_SECRET: ${PM_CLIENT_SECRET:-}
+      PM_TIMEOUT: ${PM_TIMEOUT:-15}
+      PM_PARTNER_JWKS_BASE_URL: ${PM_PARTNER_JWKS_BASE_URL:-}
+      PM_DEFAULT_POLICIES: ${PM_DEFAULT_POLICIES:-[]}
+      # Off: try-it calls only go through the gateway (no answers from stored samples).
+      SANDBOX_MOCK_RESPONSES: ${SANDBOX_MOCK_RESPONSES:-false}
       # Only needed for an empty database (see DEPLOYMENT.md, "Start from a clean database").
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@openagrinet.org}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
       LOAD_DEMO_CATALOGUE: ${LOAD_DEMO_CATALOGUE:-false}
       A2C_SPEC_PATH: /a2c/openapi_v1.public.yaml
+      FARMER_REGISTRY_COLLECTION_PATH: /farmer-registry/farmer_registry.postman_collection.json
     volumes:
       - oan_uploads:/app/uploads
       - oan_api_logs:/app/logs
       # Only the A2C OpenAPI file, read by LOAD_DEMO_CATALOGUE; no gateway runs from it.
       - ./deployment/a2c:/a2c:ro
+      # Farmer Registry Postman collection, read by LOAD_DEMO_CATALOGUE.
+      - ./deployment/farmer-registry:/farmer-registry:ro
     extra_hosts:
-      # Lets GATEWAY_SANDBOX_URL point at a gateway on the Docker host
+      # Lets GATEWAY_UAT_URL point at a gateway on the Docker host
       # (e.g. http://host.docker.internal:9080) when testing on a laptop.
       - "host.docker.internal:host-gateway"
     depends_on:

@@ -11,11 +11,21 @@ import json
 import re
 import shlex
 from typing import Any
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
 
 import yaml
 
 from app.core.exceptions import ValidationError
+
+FORM_CONTENT_TYPE = "application/x-www-form-urlencoded"
+
+
+def is_form_request(headers: dict[str, str] | None) -> bool:
+    """True when the request's Content-Type is a URL-encoded form."""
+    return any(
+        key.lower() == "content-type" and FORM_CONTENT_TYPE in str(value).lower()
+        for key, value in (headers or {}).items()
+    )
 
 # --------------------------------------------------------- schema inference
 _PY_TO_JSON = {
@@ -391,14 +401,23 @@ def build_code_sample(
     headers: dict[str, str],
     body: Any,
 ) -> str:
-    """Render a copy-pasteable client snippet for the API reference page."""
+    """Render a copy-pasteable client snippet for the API reference page.
+
+    A ``Content-Type: application/x-www-form-urlencoded`` header (e.g. an OAuth
+    token endpoint) sends ``body`` as form fields instead of JSON.
+    """
     payload = json.dumps(body, indent=2) if body is not None else ""
     method = (method or "GET").upper()
+    form = is_form_request(headers) and isinstance(body, dict)
+    # The body as one string, for the clients below that send raw text.
+    raw = urlencode(body) if form else json.dumps(body)
 
     if language == "curl":
         parts = [f"curl -X {method} '{url}'"]
         parts += [f"  -H '{key}: {value}'" for key, value in headers.items()]
-        if body is not None:
+        if form:
+            parts += [f"  --data-urlencode '{key}={value}'" for key, value in body.items()]
+        elif body is not None:
             parts.append(f"  -d '{json.dumps(body)}'")
         return " \\\n".join(parts)
 
@@ -407,7 +426,8 @@ def build_code_sample(
         if body is not None:
             lines.append(f"payload = {body!r}")
             lines.append(
-                f"response = requests.{method.lower()}(url, json=payload, headers=headers)"
+                f"response = requests.{method.lower()}(url, {'data' if form else 'json'}=payload, "
+                "headers=headers)"
             )
         else:
             lines.append(f"response = requests.{method.lower()}(url, headers=headers)")
@@ -418,9 +438,8 @@ def build_code_sample(
         init = {"method": method, "headers": headers}
         init_json = json.dumps(init, indent=2)
         if body is not None:
-            init_json = (
-                init_json[:-1].rstrip() + f",\n  body: JSON.stringify({payload})\n}}"
-            )
+            encode = "new URLSearchParams" if form else "JSON.stringify"
+            init_json = init_json[:-1].rstrip() + f",\n  body: {encode}({payload})\n}}"
         return (
             f"const response = await fetch({json.dumps(url)}, {init_json});\n"
             "const data = await response.json();\n"
@@ -429,7 +448,7 @@ def build_code_sample(
 
     if language == "go":
         body_arg = (
-            f"bytes.NewBuffer([]byte(`{json.dumps(body)}`))"
+            f"bytes.NewBuffer([]byte(`{raw}`))"
             if body is not None
             else "nil"
         )
@@ -449,7 +468,14 @@ def build_code_sample(
             f"curl_setopt($ch, CURLOPT_CUSTOMREQUEST, {json.dumps(method)});\n"
             "curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);\n"
             + (
-                f"curl_setopt($ch, CURLOPT_POSTFIELDS, {json.dumps(json.dumps(body))});\n"
+                "curl_setopt($ch, CURLOPT_HTTPHEADER, ["
+                + ", ".join(json.dumps(f"{k}: {v}") for k, v in headers.items())
+                + "]);\n"
+                if headers
+                else ""
+            )
+            + (
+                f"curl_setopt($ch, CURLOPT_POSTFIELDS, {json.dumps(raw)});\n"
                 if body is not None
                 else ""
             )
@@ -466,7 +492,7 @@ def build_code_sample(
             )
             + (
                 f"    .method({json.dumps(method)}, "
-                f"HttpRequest.BodyPublishers.ofString({json.dumps(json.dumps(body))}))\n"
+                f"HttpRequest.BodyPublishers.ofString({json.dumps(raw)}))\n"
                 if body is not None
                 else f"    .method({json.dumps(method)}, HttpRequest.BodyPublishers.noBody())\n"
             )
@@ -483,8 +509,8 @@ def build_code_sample(
                 for k, v in headers.items()
             )
             + (
-                f"request.Content = new StringContent({json.dumps(json.dumps(body))}, "
-                'Encoding.UTF8, "application/json");\n'
+                f"request.Content = new StringContent({json.dumps(raw)}, Encoding.UTF8, "
+                f"{json.dumps(FORM_CONTENT_TYPE if form else 'application/json')});\n"
                 if body is not None
                 else ""
             )

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config.settings import settings
 from app.core.deps import AdminPrincipal
 from app.core.exceptions import (
     ConflictError,
@@ -16,7 +17,7 @@ from app.core.exceptions import (
 )
 from app.core.pagination import Page
 from app.core.permissions import PERMISSION_TREE
-from app.core.security import generate_token_urlsafe, hash_password
+from app.core.security import generate_token_urlsafe, hash_password, sha256_token
 from app.models.admin import AdmRole, AdmUser
 from app.repositories.admin_repository import (
     AdminTokenRepository,
@@ -25,7 +26,9 @@ from app.repositories.admin_repository import (
     RoleRepository,
 )
 from app.schemas.admin import (
+    AdminInviteOut,
     AdminUserCreate,
+    AdminUserCreated,
     AdminUserListQuery,
     AdminUserOut,
     PermissionNode,
@@ -66,12 +69,15 @@ def get_user(db: Session, admin_id: int) -> AdminUserOut:
 
 def create_user(
     db: Session, admin: AdminPrincipal, payload: AdminUserCreate
-) -> AdminUserOut:
+) -> AdminUserCreated:
+    """Create the user. Without a password it is invited: the result carries
+    the set-password link, which is also emailed while mail is on."""
     repo = AdminUserRepository(db)
     _assert_login_available(repo, payload.login_name, payload.email_id)
 
     if RoleRepository(db).get(payload.role_id) is None:
         raise ValidationError("Selected role does not exist.")
+    _assert_role_assignable(db, admin, payload.role_id)
 
     invite_token = None if payload.password else generate_token_urlsafe()
     user = repo.create(
@@ -86,14 +92,13 @@ def create_user(
         admin_area_code=payload.admin_area_code,
         description=payload.description,
         is_activated=bool(payload.password),
-        set_pass_token=invite_token,
+        set_pass_token=sha256_token(invite_token) if invite_token else None,
         set_pass_token_time=datetime.now(UTC) if invite_token else None,
         added_by=admin.id,
         modify_by=admin.id,
     )
 
-    if invite_token:
-        _send_invite(db, user, invite_token)
+    invitation = _send_invite(db, user, invite_token) if invite_token else None
 
     audit_service.record_admin(
         db,
@@ -101,14 +106,20 @@ def create_user(
         Action.ADMIN_USER_CREATE,
         entity="adm_user",
         entity_id=user.admin_id,
-        description=f"Created admin user {user.login_name}",
+        description=f"Created admin user {user.login_name}"
+        + (" (invitation link issued)" if invitation else ""),
     )
-    return _to_user_out(user, _role_names(db, [user.role_id]))
+    out = _to_user_out(user, _role_names(db, [user.role_id]))
+    return AdminUserCreated(**out.model_dump(), invitation=invitation)
 
 
 def update_user(db: Session, admin: AdminPrincipal, payload) -> AdminUserOut:
     repo = AdminUserRepository(db)
     user = _require_participant(db, payload.admin_id)
+    _assert_can_manage(db, admin, user)
+    if payload.role_id is not None and payload.role_id != user.role_id:
+        _assert_not_self(admin, user, "You cannot change your own role.")
+        _assert_role_assignable(db, admin, payload.role_id)
 
     if payload.login_name and repo.login_name_taken(payload.login_name, user.admin_id):
         raise ConflictError("This username is already taken.")
@@ -139,6 +150,7 @@ def update_user(db: Session, admin: AdminPrincipal, payload) -> AdminUserOut:
             is_activated=True,
             activate_date=user.activate_date or datetime.now(UTC),
         )
+        AdminTokenRepository(db).logout_all(user.admin_id)
 
     audit_service.record_admin(
         db,
@@ -156,6 +168,7 @@ def toggle_user(
 ) -> AdminUserOut:
     user = _require_participant(db, admin_id)
     _assert_not_self(admin, user, "You cannot disable your own account.")
+    _assert_can_manage(db, admin, user)
 
     AdminUserRepository(db).toggle(user, is_enabled, admin.id)
     if not user.is_enabled:
@@ -177,6 +190,7 @@ def delete_user(db: Session, admin: AdminPrincipal, admin_id: int) -> None:
     _assert_not_self(admin, user, "You cannot delete your own account.")
     if user.is_master:
         raise ForbiddenError("Master administrator accounts cannot be deleted.")
+    _assert_can_manage(db, admin, user)
 
     AdminUserRepository(db).soft_delete(user, admin.id)
     AdminTokenRepository(db).logout_all(user.admin_id)
@@ -191,23 +205,30 @@ def delete_user(db: Session, admin: AdminPrincipal, admin_id: int) -> None:
     )
 
 
-def resend_invite(db: Session, admin: AdminPrincipal, admin_id: int) -> None:
+def resend_invite(db: Session, admin: AdminPrincipal, admin_id: int) -> AdminInviteOut:
+    """A new invitation (the earlier link stops working), emailed while mail
+    is on; the link is returned either way for the administrator to copy."""
     user = _require_participant(db, admin_id)
+    _assert_can_manage(db, admin, user)
+    if user.is_activated:
+        raise ValidationError("This user has already set a password; use a password reset instead.")
     token = generate_token_urlsafe()
-    user.set_pass_token = token
+    user.set_pass_token = sha256_token(token)
     user.set_pass_token_time = datetime.now(UTC)
     user.modify_by = admin.id
     db.commit()
 
-    _send_invite(db, user, token)
+    invitation = _send_invite(db, user, token)
     audit_service.record_admin(
         db,
         admin,
         Action.ADMIN_USER_INVITE,
         entity="adm_user",
         entity_id=user.admin_id,
-        description=f"Re-sent invitation to {user.email_id}",
+        description=f"New invitation link for {user.email_id}"
+        + (" (emailed)" if invitation.emailed else " (mail off: link copied by the administrator)"),
     )
+    return invitation
 
 
 def is_login_available(
@@ -259,6 +280,7 @@ def create_role(
     if repo.name_taken(payload.role_name):
         raise ConflictError("A role with this name already exists.")
 
+    _assert_grant_allowed(admin, payload.permission_ids)
     role = repo.create(
         role_name=payload.role_name.strip(),
         role_level=payload.role_level,
@@ -288,6 +310,8 @@ def update_role(
     role = _require_role(db, payload.role_id)
     if not role.is_editable:
         raise ForbiddenError("This role is system-managed and cannot be edited.")
+    _assert_not_own_role(admin, role.role_id)
+    _assert_grant_allowed(admin, payload.permission_ids)
     if payload.role_name and repo.name_taken(payload.role_name, role.role_id):
         raise ConflictError("A role with this name already exists.")
 
@@ -317,6 +341,9 @@ def toggle_role(
     db: Session, admin: AdminPrincipal, role_id: int, is_enabled: bool | None
 ) -> RoleDetailOut:
     role = _require_role(db, role_id)
+    if not role.is_editable:
+        raise ForbiddenError("This role is system-managed and cannot be changed.")
+    _assert_not_own_role(admin, role.role_id)
     RoleRepository(db).toggle(role, is_enabled, admin.id)
     audit_service.record_admin(
         db,
@@ -384,7 +411,11 @@ def update_permissions(
     db: Session, admin: AdminPrincipal, role_id: int, flags: list
 ) -> None:
     role = _require_role(db, role_id)
+    if not role.is_editable:
+        raise ForbiddenError("This role is system-managed and cannot be edited.")
+    _assert_not_own_role(admin, role.role_id)
     granted = [flag.id for flag in flags if flag.status]
+    _assert_grant_allowed(admin, granted)
     PermissionRepository(db).replace_role_permissions(role_id, granted, admin.id)
 
     audit_service.record_admin(
@@ -427,6 +458,39 @@ def _assert_not_self(admin: AdminPrincipal, user: AdmUser, message: str) -> None
         raise ForbiddenError(message)
 
 
+# An administrator can never hand out (to a role, or by assigning a role)
+# more than they hold themselves, nor touch a master or a stronger account.
+def _assert_grant_allowed(admin: AdminPrincipal, permission_ids) -> None:
+    if admin.is_master:
+        return
+    extra = {int(p) for p in (permission_ids or [])} - admin.permissions
+    if extra:
+        raise ForbiddenError("You cannot grant permissions you do not hold yourself.")
+
+
+def _assert_not_own_role(admin: AdminPrincipal, role_id: int) -> None:
+    if not admin.is_master and admin.user.role_id == role_id:
+        raise ForbiddenError("You cannot change your own role's permissions.")
+
+
+def _assert_role_assignable(db: Session, admin: AdminPrincipal, role_id: int) -> None:
+    if admin.is_master:
+        return
+    role = RoleRepository(db).get(role_id)
+    if role is not None and role.role_name == MASTER_ROLE_NAME:
+        raise ForbiddenError("Only a master administrator can assign this role.")
+    _assert_grant_allowed(admin, PermissionRepository(db).allowed_ids_for_role(role_id))
+
+
+def _assert_can_manage(db: Session, admin: AdminPrincipal, user: AdmUser) -> None:
+    if admin.is_master:
+        return
+    if user.is_master:
+        raise ForbiddenError("Only a master administrator can change this account.")
+    if user.admin_id != admin.id:
+        _assert_grant_allowed(admin, PermissionRepository(db).allowed_ids_for_role(user.role_id))
+
+
 def _role_names(db: Session, role_ids: list[int | None]) -> dict[int, str]:
     """Resolve role names in one query, so grids do not trigger an N+1."""
     ids = {role_id for role_id in role_ids if role_id}
@@ -444,10 +508,15 @@ def _to_user_out(user: AdmUser, role_names: dict[int, str]) -> AdminUserOut:
     return out
 
 
-def _send_invite(db: Session, user: AdmUser, token: str) -> None:
-    send_templated(
+def _send_invite(db: Session, user: AdmUser, token: str) -> AdminInviteOut:
+    """Email the invitation (a no-op while mail is off) and return its link."""
+    emailed = send_templated(
         db,
         TemplateCode.ADMIN_INVITE,
         user.email_id,
         {"name": user.full_name or user.login_name, "token": token},
+    )
+    return AdminInviteOut(
+        invite_url=f"{settings.portal_url}/admin/set-password?token={token}",
+        emailed=bool(emailed),
     )

@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.permissions import PERMISSION_TREE
+from app.core.security import sha256_token
 from app.models.admin import (
     AdmPermission,
     AdmRole,
@@ -53,7 +54,8 @@ class AdminUserRepository(BaseRepository[AdmUser]):
         return self.db.execute(stmt).scalars().first() is not None
 
     def get_by_set_pass_token(self, token: str) -> AdmUser | None:
-        return self.get_by(set_pass_token=token)
+        # Only the token's hash is stored.
+        return self.get_by(set_pass_token=sha256_token(token))
 
     def list_with_roles(self, **kwargs: Any):
         """Paginated list joined to the role, so grids can show the role name."""

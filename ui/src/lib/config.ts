@@ -30,7 +30,7 @@ export const DIAL_CODES: Record<string, string> = {
   NG: "234",
 };
 
-export const ENVIRONMENTS = ["SANDBOX", "UAT", "PRODUCTION"] as const;
+export const ENVIRONMENTS = ["UAT", "PRODUCTION"] as const;
 export type Environment = (typeof ENVIRONMENTS)[number];
 
 export const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;

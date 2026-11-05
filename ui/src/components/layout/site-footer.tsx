@@ -65,7 +65,7 @@ export function SiteFooter({
             </Link>
             <p className="mt-4 max-w-sm text-sm leading-relaxed">
               Shared digital infrastructure for agriculture. Test every API with synthetic data,
-              then move to UAT and production.
+              in UAT, then move to production.
             </p>
           </div>
 
@@ -87,7 +87,7 @@ export function SiteFooter({
 
         <div className="mt-12 flex flex-col gap-3 border-t border-white/10 pt-6 text-sm lg:flex-row lg:items-start lg:justify-between">
           <p className="text-white">
-            © {new Date().getFullYear()} {config.siteName}. Sandbox data is synthetic.
+            © {new Date().getFullYear()} {config.siteName}.
           </p>
         </div>
       </div>

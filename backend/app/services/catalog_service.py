@@ -349,6 +349,10 @@ def get_endpoint(
     ]
     if not published_only:
         detail.resolved_upstreams = sandbox_service.upstream_urls(endpoint)
+    else:
+        # Participants see the gateway URL in code samples; the upstream
+        # addresses behind it are internal and stay in the console.
+        detail.uat_api_url = detail.prod_api_url = None
     return detail
 
 

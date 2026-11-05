@@ -20,7 +20,22 @@ HEADER_FILL = PatternFill("solid", start_color="1F5F3F", end_color="1F5F3F")
 HEADER_FONT = Font(color="FFFFFF", bold=True)
 
 
+#: A cell starting with one of these is run as a formula by Excel / LibreOffice.
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _neutralise(value: Any) -> Any:
+    """Prefix text that a spreadsheet would treat as a formula (CSV/formula injection)."""
+    if isinstance(value, str) and value.startswith(_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
 def _stringify(value: Any) -> Any:
+    return _neutralise(_plain(value))
+
+
+def _plain(value: Any) -> Any:
     if isinstance(value, (datetime, date)):
         return value.strftime(
             "%Y-%m-%d %H:%M" if isinstance(value, datetime) else "%Y-%m-%d"
@@ -52,7 +67,9 @@ def to_xlsx(
 
     for row_index, row in enumerate(rows, start=2):
         for col_index, (key, _) in enumerate(columns, start=1):
-            sheet.cell(row=row_index, column=col_index, value=_stringify(row.get(key)))
+            cell = sheet.cell(row=row_index, column=col_index, value=_stringify(row.get(key)))
+            if isinstance(cell.value, str):
+                cell.data_type = "s"  # always text, never a formula
 
     # Size columns to their content, within sane bounds.
     for col_index, (key, label) in enumerate(columns, start=1):
@@ -110,7 +127,6 @@ PARTICIPANT_COLUMNS: list[tuple[str, str]] = [
     ("category_id", "Business Category"),
     ("participant_type_id", "Network Role"),
     ("is_email_verified", "Email Verified"),
-    ("is_sandbox_approved", "Sandbox"),
     ("is_uat_approved", "UAT"),
     ("is_prod_approved", "Production"),
     ("is_rejected", "Rejected"),
@@ -122,7 +138,9 @@ PARTICIPANT_COLUMNS: list[tuple[str, str]] = [
 API_LOG_COLUMNS: list[tuple[str, str]] = [
     ("log_timestamp", "Timestamp"),
     ("transaction_id", "Transaction"),
-    ("participant_id", "User"),
+    ("source", "Source"),
+    ("app_name", "App"),
+    ("participant_name", "Partner"),
     ("environment", "Environment"),
     ("method", "Method"),
     ("endpoint_url", "Endpoint"),

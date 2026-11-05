@@ -35,6 +35,9 @@ export const Permission = {
   EMAIL_TEMPLATE: 26,
   COUNTRY_MANAGEMENT: 27,
   NETWORK_PARTICIPANTS: 28,
+  API_PRODUCTS: 29,
+  PARTICIPANT_APPS: 30,
+  API_USAGE: 31,
 } as const;
 
 export type PermissionId = (typeof Permission)[keyof typeof Permission];

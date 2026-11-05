@@ -1,12 +1,18 @@
 /** Back-office console API calls. */
 
+import type { LookupPage } from "@/components/ui/searchable-multi-select";
 import { api } from "@/lib/api-client";
 import type {
   AdminDashboard,
+  AdminInvite,
   AdminParticipantDetail,
   AdminSession,
   AdminUser,
+  AdminUserCreated,
   ApiLog,
+  ApiUsageOptions,
+  ApiUsageRow,
+  ApiUsageSummary,
   DropdownItem,
   ListQuery,
   PermissionFlag,
@@ -67,7 +73,7 @@ export const adminApi = {
   getUser: (adminId: number) => api.get<AdminUser>(`/admin/users/${adminId}`, OPTIONS),
 
   createUser: (payload: Record<string, unknown>) =>
-    api.post<AdminUser>("/admin/users", payload, OPTIONS),
+    api.post<AdminUserCreated>("/admin/users", payload, OPTIONS),
 
   updateUser: (payload: Record<string, unknown>) =>
     api.put<AdminUser>("/admin/users", payload, OPTIONS),
@@ -78,8 +84,9 @@ export const adminApi = {
   deleteUser: (adminId: number) =>
     api.delete<null>(`/admin/users/${adminId}`, OPTIONS),
 
+  /** A new invitation link (emailed while mail is on); the earlier link stops working. */
   resendInvite: (adminId: number) =>
-    api.post<null>(`/admin/users/${adminId}/invite`, undefined, OPTIONS),
+    api.post<AdminInvite>(`/admin/users/${adminId}/invite`, undefined, OPTIONS),
 
   // ------------------------------------------------------------- roles
   listRoles: async (query: ListQuery) => {
@@ -195,6 +202,30 @@ export const adminApi = {
 
   exportApiHistory: (filters: Record<string, unknown>, format: "xlsx" | "csv" = "xlsx") =>
     api.download("/admin/logs/api-history/export", { format, filters }, OPTIONS),
+
+  apiUsage: async (query: ListQuery) => {
+    const page = await api.post<PagedRows<ApiUsageRow>>("/admin/logs/api-usage", query, OPTIONS);
+    return { rows: rows<ApiUsageRow>(page, "rows"), pagination: page.pagination };
+  },
+
+  apiUsageSummary: (query: ListQuery) => api.post<ApiUsageSummary>("/admin/logs/api-usage/summary", query, OPTIONS),
+
+  apiUsageOptions: () => api.get<ApiUsageOptions>("/admin/logs/api-usage/options", OPTIONS),
+
+  /** One page of partners with calls, for the searchable partner filter. */
+  lookupUsagePartners: (search: string, page: number) =>
+    api.post<LookupPage>("/admin/logs/api-usage/partners", { search: search || null, page, limit: 20 }, OPTIONS),
+
+  /** One page of apps with calls (optionally of some partners), for the app filter. */
+  lookupUsageApps: (search: string, page: number, participantIds?: number[]) =>
+    api.post<LookupPage>(
+      "/admin/logs/api-usage/apps",
+      { search: search || null, page, limit: 20, participant_ids: participantIds?.length ? participantIds : null },
+      OPTIONS,
+    ),
+
+  exportApiUsage: (filters: Record<string, unknown>, format: "xlsx" | "csv" = "xlsx") =>
+    api.download("/admin/logs/api-usage/export", { format, filters }, OPTIONS),
 
   exportUserTracking: (filters: Record<string, unknown>, format: "xlsx" | "csv" = "xlsx") =>
     api.download("/admin/logs/user-tracking/export", { format, filters }, OPTIONS),

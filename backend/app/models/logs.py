@@ -1,6 +1,7 @@
 """Audit and telemetry tables.
 
-* ``ApiLog``        - one row per call that passed through the sandbox proxy
+* ``ApiLog``        - one row per API call: try-it calls made by the sandbox,
+                      and (``source`` DIRECT) app calls the gateway reported
 * ``UserActionLog`` - who did what in the consoles (the audit trail)
 * ``SandboxLog``    - structured application events written by the logger
 """
@@ -9,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Float, Integer, String, Text
+from sqlalchemy import BigInteger, DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -18,10 +19,18 @@ from app.models.base import JSONB, BigIntPk, utcnow
 
 class ApiLog(Base):
     __tablename__ = "api_log"
+    #: Usage / billing report: calls per partner over a date range.
+    __table_args__ = (Index("ix_api_log_participant_timestamp", "participant_id", "log_timestamp"),)
 
     id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     correlation_id: Mapped[str | None] = mapped_column(String(64), index=True)
     transaction_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    #: TRYIT or DIRECT - see ``enums.ApiCallSource``.
+    source: Mapped[str] = mapped_column(String(10), default="TRYIT", server_default="TRYIT", nullable=False, index=True)
+    #: The participant app whose key made the call (``participant_app.app_id``).
+    app_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    #: APISIX's request id: a batch sent twice is stored once.
+    gateway_request_id: Mapped[str | None] = mapped_column(String(64), unique=True)
 
     participant_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
     entity_id: Mapped[str | None] = mapped_column(String(255), index=True)
@@ -95,3 +104,19 @@ class SandboxLog(Base):
     timestamp: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
     )
+
+
+class AuthThrottle(Base):
+    """Failed attempts per key (``login:admin:<name>``, ``ip:<addr>``, ``otp:<id>``).
+
+    Backs sign-in lockout and the per-IP limit on the public auth routes; kept
+    in the database so every API instance sees the same counts.
+    """
+
+    __tablename__ = "auth_throttle"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    failures: Mapped[int] = mapped_column(Integer, default=0)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

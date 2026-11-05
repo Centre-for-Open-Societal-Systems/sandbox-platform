@@ -292,13 +292,16 @@ def upsert_email_template(
 ) -> EmailTemplateOut:
     repo = EmailTemplateRepository(db)
     values = payload.model_dump(exclude={"template_id"})
-    # Keep the declared variable list in step with the body actually saved.
-    values["variables"] = payload.variables or extract_placeholders(payload.body_text)
+    # The placeholder list always follows the subject and body actually saved.
+    values["variables"] = extract_placeholders(f"{payload.subject} {payload.body_text}")
 
     if payload.template_id:
         row = repo.get(payload.template_id)
         if row is None:
             raise NotFoundError("Email template not found.")
+        # The services look templates up by code and locale: those never change on edit.
+        values.pop("template_code")
+        values.pop("locale")
         repo.set_fields(row, **values, modify_by=admin.id)
     else:
         if repo.get_by_code(payload.template_code, payload.locale):

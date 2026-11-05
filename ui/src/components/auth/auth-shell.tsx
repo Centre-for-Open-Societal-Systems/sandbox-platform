@@ -7,7 +7,7 @@ import { config } from "@/lib/config";
 const HIGHLIGHTS = [
   { Icon: Layers, label: "Open agriculture APIs" },
   { Icon: FlaskConical, label: "Safe sandbox testing" },
-  { Icon: ShieldCheck, label: "Sandbox → UAT → Production" },
+  { Icon: ShieldCheck, label: "UAT → Production" },
 ] as const;
 
 /** Field styling mirrors the OAS registry login: hairline border, green focus ring. */

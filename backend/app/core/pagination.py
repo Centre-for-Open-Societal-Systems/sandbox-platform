@@ -8,13 +8,14 @@ Admin list screens all post the same envelope, so one helper covers them:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from math import ceil
 from typing import Any
 
 from sqlalchemy import Select, func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import ColumnProperty, Session
 
 MAX_PAGE_SIZE = 200
 
@@ -56,10 +57,23 @@ def apply_search(stmt: Select, term: str | None, columns: Sequence[Any]) -> Sele
     return stmt.where(or_(*(func.lower(col).like(pattern) for col in columns)))
 
 
+#: Columns a list may never be ordered by: sorting leaks their order (e.g.
+#: password hashes or reset tokens) to whoever can see the list.
+_UNSORTABLE = re.compile(r"pass|token|otp|secret|hash|(^|_)key(_|$)", re.IGNORECASE)
+
+
+def _sort_column(model: Any, name: str | None):
+    """The mapped column ``name`` of ``model``, or None (relationships, methods, secrets)."""
+    if not name or _UNSORTABLE.search(name):
+        return None
+    attr = getattr(model, name, None)
+    return attr if isinstance(getattr(attr, "property", None), ColumnProperty) else None
+
+
 def apply_sort(
     stmt: Select, model: Any, sort_by: str | None, sort_dir: str | None, default: str
 ) -> Select:
-    column = getattr(model, sort_by, None) if sort_by else None
+    column = _sort_column(model, sort_by)
     if column is None:
         column = getattr(model, default, None)
     if column is None:

@@ -41,8 +41,8 @@ function EndpointDocs({ productId, endpointId }: { productId: number; endpointId
     staleTime: CATALOG_STALE_MS,
   });
   const codeQuery = useQuery({
-    queryKey: ["participant", "endpoint", endpointId, "code", language, "SANDBOX"],
-    queryFn: () => catalogApi.codeSample(endpointId, language, "SANDBOX"),
+    queryKey: ["participant", "endpoint", endpointId, "code", language, "UAT"],
+    queryFn: () => catalogApi.codeSample(endpointId, language, "UAT"),
     enabled: Number.isFinite(endpointId),
     staleTime: CATALOG_STALE_MS,
   });

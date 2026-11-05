@@ -3,7 +3,7 @@
 #   1. wait for PostgreSQL,
 #   2. apply Alembic migrations (no-op when the schema is current),
 #   3. optionally seed reference data / the master admin (idempotent),
-#   4. optionally load the demo catalogue (A2C + OpenG2P; re-runnable),
+#   4. optionally load the demo catalogue (A2C + OpenG2P + Farmer Registry; re-runnable),
 #   5. hand over to the server command.
 set -e
 
@@ -40,8 +40,9 @@ if [ -n "${SEED_ADMIN_PASSWORD}" ]; then
 fi
 
 if [ "${LOAD_DEMO_CATALOGUE:-false}" = "true" ]; then
-  echo "[entrypoint] loading the demo catalogue (A2C + OpenG2P)"
+  echo "[entrypoint] loading the demo catalogue (A2C + OpenG2P + Farmer Registry)"
   python scripts/a2c/load_a2c.py
+  python scripts/farmer_registry/load_farmer_registry.py
   python scripts/openg2p/load_bene_portal.py
   python scripts/openg2p/bene_portal_samples.py
 fi

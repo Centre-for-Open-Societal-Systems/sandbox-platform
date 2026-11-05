@@ -74,14 +74,19 @@ def endpoint_sample(
 
 @router.post("/try-it")
 def try_it(payload: TryItRequest, current: CurrentParticipant, db: DbSession):
-    result = sandbox_service.execute(db, current.participant, payload)
+    result = sandbox_service.execute(db, current.participant, payload, partner_token=current.keycloak_token)
     return ok("Request executed.", result.model_dump())
 
 
 @router.post("/code-sample")
 def code_sample(payload: CodeSampleRequest, current: CurrentParticipant, db: DbSession):
     sample = sandbox_service.code_sample(
-        db, payload.endpoint_id, payload.language, payload.environment
+        db,
+        payload.endpoint_id,
+        payload.language,
+        payload.environment,
+        form=payload.request,
+        participant=current.participant,
     )
     return ok("Code sample generated.", sample)
 

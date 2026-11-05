@@ -1,8 +1,8 @@
 """User lifecycle: profile, environment promotion, admin decisions, queries.
 
-Sandbox access needs no administrator - it is granted the moment the email
-address is verified. Everything in this module is about the two gates that do
-need a human: UAT and production.
+Two gates, each decided by an administrator: UAT and production. Signing up
+is the UAT request (reviewed on the sign-up details alone); approving it opens
+the portal. Production is requested from the portal with a complete profile.
 """
 
 from __future__ import annotations
@@ -11,11 +11,12 @@ from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
+from app.core.context import admin_country_scope, assert_in_admin_scope
 from app.core.deps import AdminPrincipal
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.core.pagination import Page, apply_search, apply_sort, paginate
 from app.core.security import hash_password
-from app.models.enums import ApprovalStatus, Environment
+from app.models.enums import ActivationStatus, ApprovalStatus, Environment
 from app.models.participant import Participant
 from app.repositories.participant_repository import (
     ParticipantQueryRepository,
@@ -31,7 +32,7 @@ from app.schemas.participant import (
     PromotionRequestOut,
     QueryListQuery,
 )
-from app.services import audit_service
+from app.services import app_gateway_service, audit_service, iam_user_service
 from app.services.audit_service import Action
 from app.services.notification_service import TemplateCode, send_templated
 from app.utils import exporters
@@ -39,8 +40,8 @@ from app.utils import exporters
 #: Rows written to a single spreadsheet export.
 EXPORT_ROW_LIMIT = 5000
 
-#: Everything UAT review needs to see before a decision can be made.
-REQUIRED_FOR_UAT = (
+#: Everything production review needs to see before a decision can be made.
+REQUIRED_FOR_PRODUCTION = (
     "profile_type",
     "company_name",
     "organization_registration_number",
@@ -55,6 +56,8 @@ REQUIRED_FOR_UAT = (
 
 def _list(db: Session, query: ParticipantListQuery, stmt) -> Page:
     repo = ParticipantRepository(db)
+    if (scope := admin_country_scope()) is not None:
+        stmt = stmt.where(Participant.country_code == scope)
     stmt = repo.apply_common_filters(stmt, query.model_dump())
     stmt = apply_search(stmt, query.search, repo.search_cols())
     stmt = apply_sort(
@@ -107,20 +110,25 @@ def approve_environment(
     participant = _require_participant(db, participant_id)
     now = datetime.now(UTC)
 
-    if environment == Environment.UAT:
-        participant.is_uat_approved = True
-        participant.is_uat_rejected = False
-        participant.uat_approved_date = now
-    elif environment == Environment.PRODUCTION:
+    if environment == Environment.PRODUCTION:
         participant.is_prod_approved = True
         participant.is_prod_enabled = True
         participant.is_prod_rejected = False
         participant.prod_approved_date = now
     else:
-        participant.is_sandbox_approved = True
+        # UAT approval is the account approval: the participant may sign in.
+        participant.is_uat_approved = True
+        participant.is_uat_rejected = False
+        participant.uat_approved_date = now
         participant.is_approved = int(ApprovalStatus.APPROVED)
         participant.is_rejected = False
         participant.approved_date = now
+        # Sign-ups made while mail is off have no code to enter: approval verifies them.
+        participant.is_email_verified = True
+        participant.otp = None
+        if participant.is_activated != int(ActivationStatus.BLOCKED):
+            participant.is_activated = int(ActivationStatus.ACTIVATED)
+            participant.activated_date = participant.activated_date or now
 
     participant.rejection_reason = None
     participant.modify_by = admin.id
@@ -129,6 +137,10 @@ def approve_environment(
     _close_promotion_request(
         db, participant_id, environment, ApprovalStatus.APPROVED, admin.id, remarks
     )
+    # The first approval creates the Keycloak user (no password yet: the
+    # participant's next portal sign-in hands it over); later ones add roles.
+    iam_user_service.sync(db, participant, actor_id=admin.id)
+    app_gateway_service.sync_participant_apps(db, participant_id)
 
     send_templated(
         db,
@@ -157,15 +169,16 @@ def reject(
 ) -> ParticipantOut:
     participant = _require_participant(db, participant_id)
 
-    if environment == Environment.UAT:
-        participant.is_uat_approved = False
-        participant.is_uat_rejected = True
-    elif environment == Environment.PRODUCTION:
+    if environment == Environment.PRODUCTION:
         participant.is_prod_approved = False
         participant.is_prod_enabled = False
         participant.is_prod_rejected = True
     else:
-        participant.is_sandbox_approved = False
+        # No UAT means no account: production goes with it.
+        participant.is_uat_approved = False
+        participant.is_uat_rejected = True
+        participant.is_prod_approved = False
+        participant.is_prod_enabled = False
         participant.is_approved = int(ApprovalStatus.REJECTED)
         participant.is_rejected = True
 
@@ -176,6 +189,11 @@ def reject(
     _close_promotion_request(
         db, participant_id, environment, ApprovalStatus.REJECTED, admin.id, reason
     )
+    if environment == Environment.UAT:
+        # No access any more: sign them out and stop their keys.
+        _revoke_sessions(db, participant_id)
+    iam_user_service.sync(db, participant, actor_id=admin.id)
+    app_gateway_service.sync_participant_apps(db, participant_id)
 
     send_templated(
         db,
@@ -207,6 +225,8 @@ def toggle(
 
     if not participant.is_enabled:
         _revoke_sessions(db, participant_id)
+    iam_user_service.sync(db, participant, actor_id=admin.id)
+    app_gateway_service.sync_participant_apps(db, participant_id)
 
     audit_service.record_admin(
         db,
@@ -226,6 +246,8 @@ def delete(db: Session, admin: AdminPrincipal, participant_id: int) -> None:
     participant = _require_participant(db, participant_id)
     ParticipantRepository(db).soft_delete(participant, admin.id)
     _revoke_sessions(db, participant_id)
+    iam_user_service.sync(db, participant, actor_id=admin.id)
+    app_gateway_service.sync_participant_apps(db, participant_id)
 
     audit_service.record_admin(
         db,
@@ -267,13 +289,15 @@ def update_profile(
 
 
 def profile_is_complete(participant: Participant) -> bool:
-    """True when every field UAT review depends on has a value."""
-    return all(getattr(participant, field, None) for field in REQUIRED_FOR_UAT)
+    """True when every field production review depends on has a value."""
+    return all(getattr(participant, field, None) for field in REQUIRED_FOR_PRODUCTION)
 
 
 def missing_profile_fields(participant: Participant) -> list[str]:
     return [
-        field for field in REQUIRED_FOR_UAT if not getattr(participant, field, None)
+        field
+        for field in REQUIRED_FOR_PRODUCTION
+        if not getattr(participant, field, None)
     ]
 
 
@@ -283,8 +307,10 @@ def reset_participant_password(
     participant = _require_participant(db, participant_id)
     participant.user_pass = hash_password(new_password)
     participant.modify_by = admin.id
+    _revoke_sessions(db, participant_id)
     db.commit()
     _revoke_sessions(db, participant_id)
+    iam_user_service.sync(db, participant, password=new_password, actor_id=admin.id)
 
 
 # ------------------------------------------------------- environment promotion
@@ -314,12 +340,8 @@ def request_promotion(
         added_by=participant.participant_id,
     )
 
-    if environment == Environment.UAT:
-        participant.is_uat_requested = True
-        participant.is_uat_rejected = False
-    elif environment == Environment.PRODUCTION:
-        participant.is_prod_requested = True
-        participant.is_prod_rejected = False
+    participant.is_prod_requested = True
+    participant.is_prod_rejected = False
     db.commit()
 
     audit_service.record(
@@ -429,7 +451,8 @@ def respond_to_query(
 # ------------------------------------------------------------------ helpers
 def _require_participant(db: Session, participant_id: int) -> Participant:
     participant = ParticipantRepository(db).get(participant_id)
-    if participant is None:
+    # Another country's participant is "not found" for a country administrator.
+    if participant is None or not assert_in_admin_scope(participant.country_code):
         raise NotFoundError("User not found.")
     return participant
 
@@ -437,27 +460,24 @@ def _require_participant(db: Session, participant_id: int) -> Participant:
 def _assert_promotion_allowed(
     participant: Participant, environment: Environment
 ) -> None:
-    if environment == Environment.SANDBOX:
-        raise ValidationError("Sandbox access is granted automatically.")
+    if environment == Environment.UAT:
+        raise ValidationError(
+            "UAT access is requested by signing up and reviewed by an administrator."
+        )
 
     if not participant.is_email_verified:
         raise ValidationError("Verify your email address before requesting access.")
 
-    if environment == Environment.UAT:
-        if not participant.is_sandbox_approved:
-            raise ValidationError(
-                "Sandbox access must be active before requesting UAT."
-            )
-        missing = missing_profile_fields(participant)
-        if missing:
-            raise ValidationError(
-                "Complete your profile before requesting UAT access. Missing: "
-                + ", ".join(field.replace("_", " ") for field in missing)
-                + "."
-            )
-    elif environment == Environment.PRODUCTION and not participant.is_uat_approved:
+    if not participant.is_uat_approved:
         raise ValidationError(
             "UAT access must be approved before requesting production."
+        )
+    missing = missing_profile_fields(participant)
+    if missing:
+        raise ValidationError(
+            "Complete your profile before requesting production access. Missing: "
+            + ", ".join(field.replace("_", " ") for field in missing)
+            + "."
         )
 
 
@@ -484,6 +504,4 @@ def _close_promotion_request(
 
 
 def _revoke_sessions(db: Session, participant_id: int) -> None:
-    tokens = ParticipantTokenRepository(db)
-    for token in tokens.list_all(participant_id=participant_id, is_logout=False):
-        tokens.logout(token)
+    ParticipantTokenRepository(db).logout_all(participant_id)

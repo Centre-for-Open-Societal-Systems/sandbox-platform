@@ -50,9 +50,12 @@ ROLE_GRANTS = {
         Permission.PROD_APPROVAL_PENDING,
         Permission.PROD_REJECTED_PARTICIPANTS,
         Permission.API_CATALOGUE,
+        Permission.API_PRODUCTS,
+        Permission.PARTICIPANT_APPS,
         Permission.AUDIT_LOGS,
         Permission.USER_TRACKING,
         Permission.API_HISTORY,
+        Permission.API_USAGE,
         Permission.USER_QUERIES,
     ],
     CONTENT_ROLE: [

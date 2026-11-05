@@ -8,10 +8,12 @@ import {
   FileText,
   Gauge,
   Globe2,
+  KeyRound,
   Layers,
   Leaf,
   MapPinned,
   MessageSquareText,
+  Package,
   ScrollText,
   Settings2,
   Users,
@@ -85,12 +87,16 @@ export const NAV_SECTIONS: NavSection[] = [
           },
         ],
       },
+      { label: "Apps & Keys", icon: KeyRound, href: "/admin/apps", permission: Permission.PARTICIPANT_APPS },
       { label: "User Queries", icon: MessageSquareText, href: "/admin/queries", permission: Permission.USER_QUERIES },
     ],
   },
   {
     caption: "Catalogue",
-    items: [{ label: "API Catalogue", icon: Layers, href: "/admin/products", permission: Permission.API_CATALOGUE }],
+    items: [
+      { label: "API Catalogue", icon: Layers, href: "/admin/products", permission: Permission.API_CATALOGUE },
+      { label: "API Products", icon: Package, href: "/admin/api-products", permission: Permission.API_PRODUCTS },
+    ],
   },
   {
     caption: "Administration",
@@ -123,6 +129,7 @@ export const NAV_SECTIONS: NavSection[] = [
         permission: Permission.AUDIT_LOGS,
         children: [
           { href: "/admin/logs/api-history", label: "API History", permission: Permission.API_HISTORY },
+          { href: "/admin/logs/api-usage", label: "API Usage & Billing", permission: Permission.API_USAGE },
           { href: "/admin/logs/user-tracking", label: "User Tracking", permission: Permission.USER_TRACKING },
         ],
       },

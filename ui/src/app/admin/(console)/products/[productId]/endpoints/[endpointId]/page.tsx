@@ -279,7 +279,7 @@ export default function ProxyInfoPage() {
                           {base.replace(/\/$/, "")}
                           {endpoint.endpoint_url}
                         </code>
-                      ) : environment === "SANDBOX" ? (
+                      ) : environment === "UAT" ? (
                         "Answered from the response samples (mock)"
                       ) : (
                         "Not configured"

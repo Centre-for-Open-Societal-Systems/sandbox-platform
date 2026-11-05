@@ -34,10 +34,10 @@ export function EnvironmentBadge({ participant }: { participant: Participant }) 
   if (participant.is_uat_approved) {
     return <Badge variant="info">UAT</Badge>;
   }
-  if (participant.is_sandbox_approved) {
-    return <Badge variant="neutral">Sandbox</Badge>;
+  if (participant.is_uat_requested && !participant.is_uat_rejected) {
+    return <Badge variant="warning">Pending</Badge>;
   }
-  return <Badge variant="warning">None</Badge>;
+  return <Badge variant="neutral">None</Badge>;
 }
 
 export function VerifiedBadge({ verified }: { verified: boolean }) {

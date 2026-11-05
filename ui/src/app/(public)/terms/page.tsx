@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { PAGE_CONTAINER, PageBanner } from "@/components/layout/page-banner";
 import { Card, CardContent } from "@/components/ui/card";
 import { config } from "@/lib/config";
+import { sanitizeHtml } from "@/lib/sanitize";
 import { serverFetch } from "@/lib/server-api";
 import { formatDate } from "@/lib/utils";
 import type { TermSection } from "@/types/api";
@@ -80,7 +81,7 @@ export default async function TermsPage() {
                   <h2 className="text-lg font-semibold tracking-tight">{section.sidebar_title}</h2>
                   <div
                     className="prose prose-sm mt-3 max-w-none text-muted-foreground"
-                    dangerouslySetInnerHTML={{ __html: section.term_content ?? "" }}
+                    dangerouslySetInnerHTML={{ __html: sanitizeHtml(section.term_content) }}
                   />
                 </section>
               ))}

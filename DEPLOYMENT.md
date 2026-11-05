@@ -6,7 +6,7 @@ installed on the host except Docker Engine 24+ with Compose v2.
 ```
 browser ──> web (Next.js)  :3005 ──> api (FastAPI) :8010 ──> postgres :5432 (inside the network)
                                          │
-                                         └──> existing APISIX gateway  (GATEWAY_SANDBOX_URL)
+                                         └──> existing APISIX gateway  (GATEWAY_UAT_URL)
 ```
 
 | Service | Image | Host port (default) | Purpose |
@@ -16,7 +16,7 @@ browser ──> web (Next.js)  :3005 ──> api (FastAPI) :8010 ──> postgre
 | `postgres` | `postgres:18-alpine` | `127.0.0.1:5433` | Database `sandbox_db_oan` |
 
 **The API gateway is not part of this stack.** The API calls the Apache APISIX gateway already
-deployed for the environment (dev, staging and so on) at `GATEWAY_SANDBOX_URL`. The stack will
+deployed for the environment (dev, staging and so on) at `GATEWAY_UAT_URL`. The stack will
 not start until that URL is set. Redis is not included either: the API does not use it (only
 the gateway's rate limiting does).
 
@@ -28,7 +28,7 @@ cp .env.example .env
 #   set DB_PASSWORD, JWT_ACCESS_TOKEN_KEY, JWT_REFRESH_TOKEN_KEY
 #   (python -c "import secrets; print(secrets.token_urlsafe(48))")
 #   set PUBLIC_API_URL / ALLOWED_ORIGINS / PORTAL_URL to the public addresses
-#   set GATEWAY_SANDBOX_URL to the existing APISIX proxy URL of this environment
+#   set GATEWAY_UAT_URL to the existing APISIX proxy URL of this environment
 docker compose up -d --build
 docker compose ps          # postgres, api and web all "(healthy)"
 ```
@@ -63,7 +63,7 @@ In `.env`:
 POSTGRES_INITDB_DIR=./deployment/postgres/empty
 SEED_ADMIN_EMAIL=admin@your-domain
 SEED_ADMIN_PASSWORD=<strong password>
-LOAD_DEMO_CATALOGUE=true      # optional: A2C (11 products) + OpenG2P demo product
+LOAD_DEMO_CATALOGUE=true      # optional: A2C (11 products) + OpenG2P demo product + Farmer Registry
 ```
 
 Then `docker compose up -d --build`. The API creates the schema, the master administrator,
@@ -85,9 +85,15 @@ the volume first (this deletes the data): `docker compose down -v`.
 | `POSTGRES_HOST_PORT`, `POSTGRES_BIND` | `5433`, `127.0.0.1` | DB port on the host; loopback only by default |
 | `API_DEBUG` | `false` | `true` exposes Swagger at `/docs` |
 | `MAIL_ENABLED`, `SMTP_*` | off | Needed for sign-up codes, reset links and query replies to be emailed |
-| `GATEWAY_SANDBOX_URL` | — (required) | Proxy URL of the **existing** APISIX for this environment; try-it calls for gateway products go here |
+| `GATEWAY_UAT_URL` | — (required) | Proxy URL of the **existing** APISIX for UAT; try-it calls for gateway products go here |
 | `GATEWAY_ENABLED` | `true` | Route products flagged "Served through the API gateway" via APISIX |
-| `GATEWAY_UAT_URL`, `GATEWAY_PROD_URL` | empty | External UAT/production gateways when they exist |
+| `GATEWAY_PROD_URL` | empty | External production gateway when it exists |
+| `GATEWAY_UAT_PUBLIC_URL`, `GATEWAY_PROD_PUBLIC_URL` | empty (= the URL above) | The gateway as **partners** reach it; shown in code samples, the try-it request URL and API history (see §7) |
+| `GATEWAY_SYNC_ENABLED`, `GATEWAY_TYPE` | `false`, `apisix` | **Pull from gateway** in the console; `apisix` or `kong` (see §7) |
+| `GATEWAY_ADMIN_URL`, `GATEWAY_ADMIN_TOKEN` | empty | Gateway Admin API and its key, read by the pull (and written by app sync) |
+| `GATEWAY_APP_SYNC_ENABLED` | `false` | Write participant apps to APISIX as consumers (see §7, *Apps and keys*) |
+| `APP_CREDENTIAL_ENCRYPTION_KEY` | — (**Secret**, required in production) | Fernet key for stored app keys/secrets; never rotate it without re-issuing keys |
+| `SANDBOX_MOCK_RESPONSES` | `false` | `true` lets try-it answer non-gateway endpoints from stored samples |
 | `POSTGRES_INITDB_DIR` | `./deployment/postgres/initdb` | `./deployment/postgres/empty` for a clean database |
 | `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD`, `LOAD_DEMO_CATALOGUE` | —, —, `false` | Clean-database mode |
 | `IMAGE_PREFIX`, `IMAGE_TAG` | `oan-sandbox`, `latest` | Names of the built images (`oan-sandbox-api`, `oan-sandbox-web`) |
@@ -155,7 +161,7 @@ gzip -9 -f deployment/postgres/initdb/01-oan-sandbox-data.sql
 
 ## 7. API gateway (existing APISIX)
 
-The sandbox does not run the gateway. Set `GATEWAY_SANDBOX_URL` to the proxy (not the Admin
+The sandbox does not run the gateway. Set `GATEWAY_UAT_URL` to the proxy (not the Admin
 API) of the Apache APISIX already deployed for the environment, e.g.
 `https://apisix-dev.example.org`; set `GATEWAY_UAT_URL` and `GATEWAY_PROD_URL` when those
 gateways exist. The API container must be able to reach that URL.
@@ -178,18 +184,119 @@ What the APISIX deployment must provide for the A2C products:
 | IP allow-lists | `ip-restriction` | |
 | Rate limits | `limit-count` (Redis policy when several APISIX nodes run) | A2C login: 5 per minute per IP |
 
+What it must provide for **Farmer Registry - Staff API** (catalogue product from
+`deployment/farmer-registry/farmer_registry.postman_collection.json`):
+
+| Gateway path (POST) | Upstream | Notes |
+| --- | --- | --- |
+| `/farmer-registry/auth/token` | `https://<keycloak>/realms/staff/protocol/openid-connect/token` | Form body; the staff user and client secret come from the registry team |
+| `/farmer-registry/<path>` (12 paths in the collection) | `https://<farmer registry staff API>/<path>` | Strip the `/farmer-registry` prefix |
+| CSRF | `proxy-rewrite` header `Cookie: X-CSRF-Token=$http_x_csrf_token` | The registry checks a header/cookie double-submit; partners send only the header |
+
+The local generator `apisix-gateway/build_apisix_config.py` (`farmer_registry_adc`) writes this as an
+ADC file with host placeholders; it can be used as the starting point for the environment's gateway.
+
 **Laptop test.** Run a gateway on the Docker host and set
-`GATEWAY_SANDBOX_URL=http://host.docker.internal:<proxy port>` (APISIX listens on `9080` by
+`GATEWAY_UAT_URL=http://host.docker.internal:<proxy port>` (APISIX listens on `9080` by
 default; the separate local test stack used so far listens on `8100`). `localhost` inside a
 container is the container itself. Local gateway stacks are test tools only; they are not
 deployed with the sandbox.
 
+**Public gateway URL.** The API calls the gateway on `GATEWAY_UAT_URL`; partners copy the
+URL from the code samples into Postman or their own code. When the API reaches the gateway on
+an address partners cannot use (`host.docker.internal`, a cluster service such as
+`http://apisix-gateway.apisix:9080`), set `GATEWAY_UAT_PUBLIC_URL` (and the UAT/PROD ones)
+to the public proxy URL, e.g. `https://apisix-dev.example.org`. Calls still go to the internal
+URL; code samples, the try-it request URL and API history show the public one. Leave it empty
+when both are the same. Laptop test: `GATEWAY_UAT_URL=http://host.docker.internal:9080`,
+`GATEWAY_UAT_PUBLIC_URL=http://localhost:9080`.
+
+**Pull from gateway.** With `GATEWAY_SYNC_ENABLED=true`, `GATEWAY_TYPE` (`apisix` or `kong`),
+`GATEWAY_ADMIN_URL` and `GATEWAY_ADMIN_TOKEN` set, the console's API Catalogue shows a
+**Pull from gateway** button. It reads every service and route from the Admin API
+(APISIX `/apisix/admin/services|routes`, Kong `/services`, `/routes`, `/plugins`), shows a
+preview, then on **Apply pull**:
+
+- matches each route operation (method + path; `:id` and `(?<id>…)` become `{id}`) with the
+  end-points served through the gateway;
+- creates the new ones, unpublished, in the product already holding the service's end-point
+  with the closest path, or else in a product per gateway service
+  (`product.gateway_product_id`), with path parameters and the credential header taken from
+  the route's auth plugin (`jwt-auth` / `key-auth`, or an `auth: bearer` label);
+- fills in what existing end-points lack (name, description, path parameters, credential
+  header) without overwriting an imported OpenAPI contract;
+- lists end-points the gateway no longer serves, and wildcard / OPTIONS-only routes, without
+  deleting anything.
+
+Request and response samples are not on the gateway: import the app's OpenAPI spec on the
+product for those. The API is `GET /oan/admin/gateway/status` and
+`POST /oan/admin/gateway/sync` (`{"dry_run": true}` for the preview).
+
 The A2C login rate limit is per IP, and every try-it call reaches the gateway from the API
 container, so participants share that budget.
+
+**Apps and keys.** Participants create apps (portal: *My Apps*), each with an API key and a
+secret, and request **API products** (console: *API Products*, bundles of catalogue endpoints;
+requests are decided in *Apps & Keys*). With `GATEWAY_APP_SYNC_ENABLED=true` every app is written
+to APISIX through `GATEWAY_ADMIN_URL` as a consumer `oanapp_<id>` (label
+`managed_by=oan-sandbox`): `key-auth` and `hmac-auth` credentials, and a `consumer-restriction`
+whitelist of the routes its approved API products cover. So:
+
+- the admin key needs **write** access to consumers (a viewer key only serves the pull);
+- routes that should require an app key carry `key-auth` (`header: apikey`) and serve **one
+  operation per route**, so an app can be granted a subset of them;
+- set `APP_CREDENTIAL_ENCRYPTION_KEY` (Secret) before the first key is issued and keep it;
+- a failed gateway write is kept on the app (*Sync failed*) and retried with *Re-sync gateway*.
+
+### OAuth app tokens (`GATEWAY_PARTNER_AUTH=oauth`)
+
+The mode used on dev. Partners do not send the API key per call: they exchange the app's
+API key + secret for an access token at Keycloak (client credentials) and send only the
+token in `X-Partner-Token`:
+
+```bash
+curl -X POST https://<keycloak>/realms/partner/protocol/openid-connect/token   --data-urlencode grant_type=client_credentials   --data-urlencode client_id=<API key> --data-urlencode client_secret=<API secret>
+curl -X POST https://<partner host>/farmer-registry/register-data/get_register_summary_data   -H "X-Partner-Token: <access_token>" -H "Content-Type: application/json" -d '{...}'
+```
+
+- Nothing is written to the gateway: no consumers or credentials. The sandbox only reads
+  the routes (a **viewer** admin key is enough). The consumer plugins of the API-key modes
+  (app IP whitelist, per-product limits, `http-logger` for API history of direct calls) do
+  not apply; the routes limit calls per app.
+- The sandbox writes every active app key to Keycloak as a confidential client
+  (`oan-sandbox-provisioner` needs `manage-clients`; `setup_partner_realm.py` gives it) whose
+  tokens carry `participant_uid`, `oan_app`, `oan_environments` and `oan_routes` (the APISIX
+  route ids of the app's approved API products). Revoking a key or deleting an app deletes
+  the client: no new token.
+- The gateway routes check the token (realm JWKS, `iss`, `exp`, the environment role) and
+  that the route is in `oan_routes`: `401` without or with a bad token, `403` for a route the
+  app has no product for. Locally: `PARTNER_AUTH=oauth` in `../apisix-gateway`. On
+  Kubernetes (APISIX Ingress Controller): chart
+  [`deploy/apisix-partner-gateway/k8s`](deploy/apisix-partner-gateway/README.md).
+- Settings: `GATEWAY_PARTNER_AUTH=oauth`, `GATEWAY_APP_SYNC_ENABLED=true`,
+  `KEYCLOAK_PROVISIONING_ENABLED=true`, `KEYCLOAK_URL`, `KEYCLOAK_REALM=partner`,
+  `KEYCLOAK_ADMIN_CLIENT_SECRET`; usually also `PARTICIPANT_AUTH_PROVIDER=keycloak` with
+  `KEYCLOAK_LOGIN_CLIENT_SECRET`. The API refuses to start with oauth but without Keycloak
+  provisioning or app sync.
+- Try-it: **Get token** on the end-point page fetches the app's token (the secret stays on
+  the server), shows the token request as its own curl, and puts the token in the
+  `X-Partner-Token` header. Code samples show only the API call.
+
+### Kubernetes (dev)
+
+The dev deployment is the Helm chart `oan-sandbox` in
+[oan-helm](https://github.com/Centre-for-Open-Societal-Systems/oan-helm/tree/main/charts/oan-sandbox):
+values `environments/dev/values/sandbox.yaml`, steps and Secret keys in
+`examples/dev/sandbox.yaml`, gateway steps in `docs/apisix-gateway.md` (section 8b). The
+same settings as above are chart values (`config.gateway.*`, `config.keycloak.*`); secrets
+come from one Secret (`DB_PASSWORD`, `JWT_*`, `APP_CREDENTIAL_ENCRYPTION_KEY`,
+`KEYCLOAK_ADMIN_CLIENT_SECRET`, `KEYCLOAK_LOGIN_CLIENT_SECRET`, `GATEWAY_ADMIN_TOKEN`).
 
 ## 8. Notes
 
 - No Redis container: the API has a `REDIS_ENABLED` setting but does not use Redis yet.
 - Mail is off by default. Until SMTP is set, sign-up verification codes and reset links only
-  appear in the API log (`docker compose logs api`).
+  appear in the API log (`docker compose logs api`). Admin invitations need no log: creating
+  a console user without a password (or **New invitation link** on a user who has not set one)
+  shows the set-password link in the console with a **Copy** button (single use, 24 hours).
 - Images: `oan-sandbox-api` about 420 MB, `oan-sandbox-web` about 320 MB (Next.js standalone server).

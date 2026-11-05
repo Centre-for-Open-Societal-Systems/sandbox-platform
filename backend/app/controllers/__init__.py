@@ -5,6 +5,7 @@
 * ``/oan``              - public content and the API catalogue
 * ``/oan/admin``        - back-office console
 * ``/oan/participant``  - participant portal and sandbox console
+* ``/oan/internal``     - callbacks from infrastructure (gateway logs)
 
 Inside the console, ``/oan/admin/participants`` manages network participants
 and ``/oan/admin/users`` manages back-office accounts - two different
@@ -14,7 +15,10 @@ audiences, two different words.
 from fastapi import APIRouter
 
 from app.config.settings import settings
-from app.controllers import home_controller
+from app.controllers import home_controller, internal_controller
+from app.controllers.admin import (
+    app_controller as admin_app_controller,
+)
 from app.controllers.admin import (
     auth_controller as admin_auth_controller,
 )
@@ -37,6 +41,9 @@ from app.controllers.admin import (
     user_controller as admin_user_controller,
 )
 from app.controllers.participant import (
+    app_controller as participant_app_controller,
+)
+from app.controllers.participant import (
     auth_controller as participant_auth_controller,
 )
 from app.controllers.participant import (
@@ -49,12 +56,14 @@ from app.controllers.participant import (
 api_router = APIRouter(prefix=settings.API_PREFIX)
 
 api_router.include_router(home_controller.router)
+api_router.include_router(internal_controller.router)
 
 admin_router = APIRouter(prefix="/admin")
 admin_router.include_router(admin_auth_controller.router)
 admin_router.include_router(admin_user_controller.router)
 admin_router.include_router(admin_participant_controller.router)
 admin_router.include_router(admin_catalog_controller.router)
+admin_router.include_router(admin_app_controller.router)
 admin_router.include_router(admin_master_controller.router)
 admin_router.include_router(admin_content_controller.router)
 admin_router.include_router(admin_log_controller.router)
@@ -63,6 +72,7 @@ participant_router = APIRouter(prefix="/participant")
 participant_router.include_router(participant_auth_controller.router)
 participant_router.include_router(participant_portal_controller.router)
 participant_router.include_router(participant_sandbox_controller.router)
+participant_router.include_router(participant_app_controller.router)
 
 api_router.include_router(admin_router)
 api_router.include_router(participant_router)

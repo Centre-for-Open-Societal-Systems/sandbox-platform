@@ -85,6 +85,18 @@ export interface AdminUser {
   added_date: string | null;
 }
 
+/** A fresh admin invitation: the set-password link (valid 24 h, once; a newer one replaces it). */
+export interface AdminInvite {
+  invite_url: string;
+  /** The invitation was also emailed (mail is on). */
+  emailed: boolean;
+}
+
+export interface AdminUserCreated extends AdminUser {
+  /** Set when the user was invited instead of given a password. */
+  invitation: AdminInvite | null;
+}
+
 export interface Role {
   role_id: number;
   unique_id: string;
@@ -102,7 +114,6 @@ export interface DashboardCounters {
   total_participants: number;
   /** Signed up but never entered the emailed verification code. */
   unverified_participants: number;
-  sandbox_participants: number;
   uat_pending: number;
   uat_participants: number;
   prod_pending: number;
@@ -200,7 +211,6 @@ export interface Participant {
   is_activated: number;
   is_rejected: boolean;
   rejection_reason: string | null;
-  is_sandbox_approved: boolean;
   is_uat_requested: boolean;
   is_uat_approved: boolean;
   is_uat_rejected: boolean;
@@ -330,7 +340,6 @@ export interface Endpoint {
 }
 
 export interface EndpointDetail extends Endpoint {
-  sandbox_api_url: string | null;
   uat_api_url: string | null;
   prod_api_url: string | null;
   /** Try-it pre-fill (portal responses only). */
@@ -372,6 +381,40 @@ export interface EndpointSample {
   response_sample: unknown;
 }
 
+/** GET /admin/gateway/status: whether "Pull from gateway" is offered. */
+export interface GatewayStatus {
+  enabled: boolean;
+  gateway_type: "apisix" | "kong";
+  admin_url_configured: boolean;
+}
+
+export interface GatewaySyncRow {
+  endpoint_id?: number;
+  product_id: number | null;
+  product_name: string;
+  method: string;
+  path: string | null;
+  changes?: string[];
+}
+
+/** POST /admin/gateway/sync. Lists are capped; the *_count fields are complete. */
+export interface GatewaySyncReport {
+  gateway_type: "apisix" | "kong";
+  dry_run: boolean;
+  services: number;
+  routes: number;
+  operations: number;
+  products_created: { product_id: number | null; product_name: string }[];
+  created: GatewaySyncRow[];
+  updated: GatewaySyncRow[];
+  unchanged: number;
+  skipped: { route: string; path: string; reason: string }[];
+  missing: GatewaySyncRow[];
+  created_count: number;
+  updated_count: number;
+  skipped_count: number;
+  missing_count: number;
+}
 
 export interface TryItResult {
   status_code: number;
@@ -482,11 +525,18 @@ export interface PublicHome {
 }
 
 // ------------------------------------------------------------------- logs
+/** TRYIT: made from the portal's try-it console; DIRECT: called on the gateway with an app key. */
+export type ApiCallSource = "TRYIT" | "DIRECT";
+
 export interface ApiLog {
   id: number;
   correlation_id: string | null;
   transaction_id: string | null;
+  source: ApiCallSource;
+  app_id: number | null;
+  app_name: string | null;
   participant_id: number | null;
+  participant_name: string | null;
   product_id: number | null;
   endpoint_id: number | null;
   environment: string | null;
@@ -503,10 +553,74 @@ export interface ApiLog {
 
 export interface ApiLogDetail extends ApiLog {
   entity_id: string | null;
+  upstream_latency_ms: number | null;
+  request_size: number | null;
+  response_size: number | null;
   response_time: string | null;
   request_headers: Record<string, unknown> | null;
   request_body: unknown;
   response_body: unknown;
+}
+
+export type ApiUsageGroup =
+  | "participant"
+  | "participant_endpoint"
+  | "endpoint"
+  | "app"
+  | "product"
+  | "day"
+  | "status";
+
+/** One row of the usage / billing report: calls counted for one group. */
+export interface ApiUsageRow {
+  participant_id: number | null;
+  participant_name: string | null;
+  email_id: string | null;
+  country_code: string | null;
+  app_id: number | null;
+  app_name: string | null;
+  product_id: number | null;
+  product_name: string | null;
+  method: string | null;
+  endpoint_url: string | null;
+  day: string | null;
+  status_code: number | null;
+  endpoints_used: number | null;
+  apps_used: number | null;
+  total_calls: number;
+  success_calls: number;
+  client_errors: number;
+  server_errors: number;
+  success_rate: number | null;
+  avg_latency_ms: number | null;
+  first_call: string | null;
+  last_call: string | null;
+}
+
+export interface ApiUsageCount {
+  label: string;
+  value: number;
+}
+
+export interface ApiUsageSummary {
+  total_calls: number;
+  success_calls: number;
+  client_errors: number;
+  server_errors: number;
+  success_rate: number | null;
+  avg_latency_ms: number | null;
+  partners: number;
+  apps: number;
+  endpoints: number;
+  first_call: string | null;
+  last_call: string | null;
+  by_status_code: ApiUsageCount[];
+  by_source: ApiUsageCount[];
+  by_day: ApiUsageCount[];
+}
+
+export interface ApiUsageOptions {
+  products: { product_id: number; name: string }[];
 }
 
 export interface UserActionLog {
@@ -522,4 +636,264 @@ export interface UserActionLog {
   correlation_id: string | null;
   changes: Record<string, unknown> | null;
   timestamp: string | null;
+}
+
+// ------------------------------------------------------ API products & apps
+export type ApprovalType = "AUTO" | "MANUAL";
+
+/** One catalogue endpoint inside an API product. */
+export interface ApiProductEndpoint {
+  endpoint_id: number;
+  product_id: number;
+  product_name: string | null;
+  display_name: string | null;
+  method: string | null;
+  endpoint_url: string | null;
+}
+
+export interface ApiProduct {
+  api_product_id: number;
+  unique_id: string;
+  name: string;
+  display_name: string;
+  description: string | null;
+  approval_type: ApprovalType;
+  is_published: boolean;
+  is_enabled: boolean;
+  country_code: string | null;
+  sort_order: number;
+  /** Gateway limits for apps with this product; null = no limit. */
+  rate_limit_per_minute: number | null;
+  quota_per_day: number | null;
+  endpoint_count: number;
+  app_count: number;
+  added_date: string | null;
+  modify_date: string | null;
+}
+
+export interface ApiProductDetail extends ApiProduct {
+  endpoints: ApiProductEndpoint[];
+}
+
+export interface ApiProductPayload {
+  name: string;
+  display_name: string;
+  description: string | null;
+  approval_type: ApprovalType;
+  is_published: boolean;
+  sort_order: number;
+  endpoint_ids: number[];
+  rate_limit_per_minute: number | null;
+  quota_per_day: number | null;
+}
+
+/** Picker data: catalogue endpoints grouped by catalogue product. */
+export interface EndpointOptionGroup {
+  product_id: number;
+  product_name: string;
+  is_gateway_published: boolean;
+  endpoints: {
+    endpoint_id: number;
+    display_name: string | null;
+    method: string | null;
+    endpoint_url: string | null;
+    is_published: boolean;
+    is_gateway_published: boolean;
+  }[];
+}
+
+/** An API product as a participant sees it when creating an app. */
+export interface AvailableApiProduct {
+  api_product_id: number;
+  name: string;
+  display_name: string;
+  description: string | null;
+  approval_type: ApprovalType;
+  rate_limit_per_minute: number | null;
+  quota_per_day: number | null;
+  endpoints: ApiProductEndpoint[];
+}
+
+export interface AppSubscription {
+  api_product_id: number;
+  name: string;
+  display_name: string;
+  rate_limit_per_minute: number | null;
+  quota_per_day: number | null;
+  /** 0 pending, 1 approved, 2 rejected, 3 revoked. */
+  status: number;
+  status_label: string;
+  remarks: string | null;
+  requested_date: string | null;
+  decided_date: string | null;
+  /** The APIs this product lets the app call. */
+  endpoints: ApiProductEndpoint[];
+}
+
+export interface AppCredential {
+  credential_id: string;
+  /** Full key for the app's owner; null for administrators and revoked keys. */
+  api_key: string | null;
+  /** Secret for the app's owner (masked in the UI until revealed); null for administrators and revoked keys. */
+  api_secret: string | null;
+  api_key_prefix: string;
+  api_secret_hint: string;
+  /** 1 active, 2 revoked. */
+  status: number;
+  status_label: string;
+  issued_date: string | null;
+  revoked_date: string | null;
+  last_used_date: string | null;
+}
+
+/** Returned when the owner issues a new key: key and secret in clear. */
+export interface IssuedCredential extends AppCredential {
+  api_key: string;
+  api_secret: string;
+}
+
+/** How the gateway identifies a caller (GATEWAY_PARTNER_AUTH), for the try-it page. */
+export interface GatewayAuth {
+  mode: "apikey" | "keycloak" | "oauth";
+  app_key_header: string;
+  token_header: string;
+  /** OAuth: where an app gets its token (client credentials). */
+  token_url: string | null;
+  grant_type: string | null;
+}
+
+/** An app's access token: client credentials with its API key + secret ("Get token"). */
+export interface AppToken {
+  token_url: string;
+  grant_type: string;
+  client_id: string;
+  header: string;
+  access_token: string;
+  token_type: string;
+  expires_in: number;
+  expires_at: string | null;
+  claims: Record<string, unknown>;
+}
+
+export type GatewaySyncStatus = "PENDING" | "SYNCED" | "FAILED" | "DISABLED";
+
+export interface ParticipantApp {
+  app_id: string;
+  name: string;
+  description: string | null;
+  callback_url: string | null;
+  environment: string;
+  /** 0 awaiting approval (no key yet), 1 active, 2 revoked, 3 rejected by an administrator. */
+  status: number;
+  status_label: string;
+  /** Why the administrator revoked or rejected the app. */
+  revoked_reason: string | null;
+  /** IP whitelist (IPs / CIDRs); empty = any address. */
+  allowed_ips: string[];
+  /** Limits the gateway applies (null = none, or limits switched off). */
+  rate_limit_per_minute: number | null;
+  quota_per_day: number | null;
+  gateway_consumer: string | null;
+  gateway_status: GatewaySyncStatus;
+  gateway_error: string | null;
+  gateway_synced_at: string | null;
+  gateway_warnings: string[];
+  products: AppSubscription[];
+  credentials: AppCredential[];
+  added_date: string | null;
+  modify_date: string | null;
+}
+
+export interface AdminApp extends ParticipantApp {
+  id: number;
+  participant_id: number;
+  participant_name: string | null;
+  participant_email: string | null;
+  company_name: string | null;
+  gateway_routes: string[];
+}
+
+/** A new app waits for an administrator, so it has no credential yet. */
+export interface AppCreated {
+  app: ParticipantApp;
+  credential: IssuedCredential | null;
+}
+
+/** The try-it form sent with a code-sample request. */
+export interface CodeSampleForm {
+  path_params: Record<string, string>;
+  query_params: Record<string, string>;
+  headers: Record<string, string>;
+  has_body: boolean;
+  body: unknown;
+  /** Show the call as this app: its API key goes in the `apikey` header. */
+  app_id: string | null;
+}
+
+/** A participant's user in Keycloak (API login): one per participant, roles = approved environments. */
+export interface IamAccount {
+  realm: string;
+  /** Keycloak username: the participant's email address. */
+  username: string;
+  /** Shared client tokens are requested from. */
+  client_id: string;
+  token_url: string;
+  grant_type: "password";
+  /** Environment roles held: sandbox, uat, production. */
+  roles: string[];
+  status: "ACTIVE" | "DISABLED" | "FAILED";
+  /** Keycloak has the current portal password. */
+  password_synced: boolean;
+  added_date: string | null;
+  synced_at: string | null;
+  error?: string | null;
+  keycloak_id?: string | null;
+  /** Console only: the user's page in the Keycloak admin console. */
+  console_url?: string | null;
+  /** Consent Manager partner portal and Partner Management; null when not configured. */
+  partner_portal?: PartnerPortalAccount | null;
+}
+
+/** What the sandbox set up for the OpenG2P Consent Manager partner portal. */
+export interface PartnerPortalAccount {
+  /** Keycloak attribute / CM claim partner_id, e.g. oan-p-42. */
+  partner_id: string | null;
+  /** The CM partner portal client; null when the portal is not configured. */
+  client_id: string | null;
+  role: string;
+  /** The user holds the portal client role. */
+  portal_access: boolean;
+  /** Partner Management provisioning is switched on. */
+  pm_enabled: boolean;
+  /** The partner in Partner Management, e.g. PARTNER_OAN_P_42. */
+  pm_partner_id: string | null;
+  pm_status: "ACTIVE" | "DISABLED" | "FAILED" | null;
+  pm_error?: string | null;
+  pm_synced_at?: string | null;
+}
+
+export interface IamAccountState {
+  /** Keycloak provisioning is switched on for this deployment. */
+  enabled: boolean;
+  account: IamAccount | null;
+}
+
+/** An email template in the console (CMS). */
+export interface EmailTemplate {
+  template_id: number;
+  template_code: string;
+  template_name: string;
+  subject: string | null;
+  body_text: string | null;
+  variables: string[] | null;
+  locale: string;
+  is_enabled: boolean;
+  modify_date: string | null;
+}
+
+/** A template rendered with sample values, for the console preview. */
+export interface EmailTemplatePreview {
+  subject: string;
+  body_html: string;
+  placeholders: string[];
 }

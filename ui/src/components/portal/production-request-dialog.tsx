@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Search } from "lucide-react";
+import { ChevronRight, Search } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -54,6 +54,8 @@ export function ProductionRequestDialog({ open, onOpenChange, onSubmit, submitti
   const [certificate, setCertificate] = React.useState<File | null>(null);
   const [document, setDocument] = React.useState<File | null>(null);
   const [endpointSearch, setEndpointSearch] = React.useState("");
+  const [selectedOnly, setSelectedOnly] = React.useState(false);
+  const [expanded, setExpanded] = React.useState<Set<number>>(new Set());
 
   const menuQuery = useQuery({
     queryKey: ["participant", "catalog", "menu"],
@@ -68,26 +70,37 @@ export function ProductionRequestDialog({ open, onOpenChange, onSubmit, submitti
   });
 
   const term = endpointSearch.trim().toLowerCase();
+  // Searching or "selected only" shows every match, so all groups open.
+  const forceOpen = Boolean(term) || selectedOnly;
   const products = (menuQuery.data ?? [])
     .map((product) => ({
       ...product,
       endpoints: product.endpoints.filter(
         (endpoint) =>
-          !term ||
-          (product.display_name ?? product.product_name).toLowerCase().includes(term) ||
-          (endpoint.display_name ?? "").toLowerCase().includes(term) ||
-          (endpoint.endpoint_url ?? "").toLowerCase().includes(term),
+          (!selectedOnly || form.endpointIds.includes(endpoint.endpoint_id)) &&
+          (!term ||
+            (product.display_name ?? product.product_name).toLowerCase().includes(term) ||
+            (endpoint.display_name ?? "").toLowerCase().includes(term) ||
+            (endpoint.endpoint_url ?? "").toLowerCase().includes(term)),
       ),
     }))
     .filter((product) => product.endpoints.length > 0);
 
-  function toggleEndpoint(endpointId: number) {
-    setForm((current) => ({
-      ...current,
-      endpointIds: current.endpointIds.includes(endpointId)
-        ? current.endpointIds.filter((id) => id !== endpointId)
-        : [...current.endpointIds, endpointId],
-    }));
+  function toggleEndpoints(endpointIds: number[], on: boolean) {
+    setForm((current) => {
+      const next = new Set(current.endpointIds);
+      endpointIds.forEach((id) => (on ? next.add(id) : next.delete(id)));
+      return { ...current, endpointIds: [...next] };
+    });
+  }
+
+  function toggleExpanded(productId: number) {
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (next.has(productId)) next.delete(productId);
+      else next.add(productId);
+      return next;
+    });
   }
 
   function handleOpenChange(next: boolean) {
@@ -96,6 +109,8 @@ export function ProductionRequestDialog({ open, onOpenChange, onSubmit, submitti
       setCertificate(null);
       setDocument(null);
       setEndpointSearch("");
+      setSelectedOnly(false);
+      setExpanded(new Set());
     }
     onOpenChange(next);
   }
@@ -215,40 +230,111 @@ export function ProductionRequestDialog({ open, onOpenChange, onSubmit, submitti
                 className="pl-9"
               />
             </div>
-            <div className="max-h-64 overflow-y-auto rounded-xl border border-hairline">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+              <label className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={selectedOnly}
+                  onChange={(event) => setSelectedOnly(event.target.checked)}
+                  className="h-4 w-4 accent-[var(--color-brand-bright)]"
+                />
+                Selected only
+              </label>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  className="text-nav-active hover:underline disabled:opacity-50"
+                  disabled={forceOpen}
+                  onClick={() => setExpanded(new Set(products.map((p) => p.product_id)))}
+                >
+                  Expand all
+                </button>
+                <button
+                  type="button"
+                  className="text-nav-active hover:underline disabled:opacity-50"
+                  disabled={forceOpen}
+                  onClick={() => setExpanded(new Set())}
+                >
+                  Collapse all
+                </button>
+              </div>
+            </div>
+            {/* relative: contains the sr-only (absolute) legends so they don't stretch the dialog's scroll area */}
+            <div className="relative max-h-80 overflow-y-auto rounded-xl border border-hairline">
               {menuQuery.isLoading ? (
                 <p className="p-4 text-sm text-subtle">Loading the catalogue…</p>
               ) : products.length === 0 ? (
-                <p className="p-4 text-sm text-subtle">No end-points match.</p>
+                <p className="p-4 text-sm text-subtle">
+                  {selectedOnly && !term ? "No end-points selected yet." : "No end-points match."}
+                </p>
               ) : (
-                products.map((product) => (
-                  <fieldset key={product.product_id} className="border-b border-hairline last:border-b-0">
-                    <legend className="sr-only">{product.display_name ?? product.product_name}</legend>
-                    <p className="sticky top-0 bg-surface-soft px-4 py-2 text-xs font-semibold text-nav-active">
-                      {product.display_name ?? product.product_name}
-                    </p>
-                    {product.endpoints.map((endpoint) => (
-                      <label
-                        key={endpoint.endpoint_id}
-                        className="flex cursor-pointer items-center gap-3 px-4 py-2 text-sm hover:bg-slate-50"
-                      >
+                products.map((product) => {
+                  const name = product.display_name ?? product.product_name;
+                  const ids = product.endpoints.map((e) => e.endpoint_id);
+                  const count = ids.filter((id) => form.endpointIds.includes(id)).length;
+                  const isOpen = forceOpen || expanded.has(product.product_id);
+                  const panelId = `prod-group-${product.product_id}`;
+                  return (
+                    <fieldset key={product.product_id} className="border-b border-hairline last:border-b-0">
+                      <legend className="sr-only">{name}</legend>
+                      <div className="sticky top-0 z-10 flex items-center gap-3 bg-surface-soft px-4 py-2 text-sm">
                         <input
                           type="checkbox"
-                          checked={form.endpointIds.includes(endpoint.endpoint_id)}
-                          onChange={() => toggleEndpoint(endpoint.endpoint_id)}
-                          className="h-4 w-4 accent-[var(--color-brand-bright)]"
+                          aria-label={`Select all end-points of ${name}`}
+                          checked={count > 0 && count === ids.length}
+                          ref={(el) => {
+                            if (el) el.indeterminate = count > 0 && count < ids.length;
+                          }}
+                          onChange={(event) => toggleEndpoints(ids, event.target.checked)}
+                          className="h-4 w-4 shrink-0 accent-[var(--color-brand-bright)]"
                         />
-                        <MethodBadge method={endpoint.method} />
-                        <span className="min-w-0 truncate">
-                          {endpoint.display_name || endpoint.endpoint_url}
-                          {endpoint.display_name ? (
-                            <code className="ml-2 font-mono text-xs text-subtle">{endpoint.endpoint_url}</code>
-                          ) : null}
-                        </span>
-                      </label>
-                    ))}
-                  </fieldset>
-                ))
+                        <button
+                          type="button"
+                          aria-expanded={isOpen}
+                          aria-controls={panelId}
+                          disabled={forceOpen}
+                          onClick={() => toggleExpanded(product.product_id)}
+                          className="flex min-w-0 flex-1 items-center gap-2 text-left font-semibold text-nav-active"
+                        >
+                          <ChevronRight
+                            className={`h-4 w-4 shrink-0 text-subtle transition-transform ${isOpen ? "rotate-90" : ""}`}
+                            aria-hidden
+                          />
+                          <span className="truncate">{name}</span>
+                          <span className="ml-auto shrink-0 text-xs font-normal text-subtle">
+                            {count} / {ids.length} selected
+                          </span>
+                        </button>
+                      </div>
+                      {isOpen ? (
+                        <div id={panelId}>
+                          {product.endpoints.map((endpoint) => (
+                            <label
+                              key={endpoint.endpoint_id}
+                              className="flex cursor-pointer items-center gap-3 px-4 py-2 pl-11 text-sm hover:bg-slate-50"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={form.endpointIds.includes(endpoint.endpoint_id)}
+                                onChange={(event) => toggleEndpoints([endpoint.endpoint_id], event.target.checked)}
+                                className="h-4 w-4 shrink-0 accent-[var(--color-brand-bright)]"
+                              />
+                              <MethodBadge method={endpoint.method} />
+                              <span className="flex min-w-0 flex-1 flex-col">
+                                {endpoint.display_name ? (
+                                  <span className="truncate">{endpoint.display_name}</span>
+                                ) : null}
+                                <code className="truncate font-mono text-xs text-subtle" title={endpoint.endpoint_url ?? ""}>
+                                  {endpoint.endpoint_url}
+                                </code>
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      ) : null}
+                    </fieldset>
+                  );
+                })
               )}
             </div>
           </section>

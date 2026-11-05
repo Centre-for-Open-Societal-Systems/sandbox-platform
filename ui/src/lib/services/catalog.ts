@@ -2,11 +2,14 @@
 
 import { api } from "@/lib/api-client";
 import type {
+  CodeSampleForm,
   CatalogMenuProduct,
   Endpoint,
   EndpointDetail,
   EndpointSample,
   EndpointSchema,
+  GatewayStatus,
+  GatewaySyncReport,
   ListQuery,
   Pagination,
   Product,
@@ -65,6 +68,12 @@ export const catalogApi = {
       { product_id: productId, spec_text: specText, replace_existing: replaceExisting },
       ADMIN,
     ),
+
+  gatewayStatus: () => api.get<GatewayStatus>("/admin/gateway/status", ADMIN),
+
+  /** Pull routes from the API gateway; ``dryRun`` only reports what would change. */
+  gatewaySync: (dryRun: boolean) =>
+    api.post<GatewaySyncReport>("/admin/gateway/sync", { dry_run: dryRun }, ADMIN),
 
   listEndpoints: async (query: ListQuery) => {
     const page = await api.post<PagedRows<Endpoint>>("/admin/endpoints/list", query, ADMIN);
@@ -126,10 +135,11 @@ export const catalogApi = {
   tryIt: (payload: Record<string, unknown>) =>
     api.post<TryItResult>("/participant/try-it", payload, PORTAL),
 
-  codeSample: (endpointId: number, language: string, environment: string) =>
+  /** `request`: the try-it form as typed, so the snippet matches it; omitted = the published sample. */
+  codeSample: (endpointId: number, language: string, environment: string, request?: CodeSampleForm | null) =>
     api.post<{ language: string; code: string }>(
       "/participant/code-sample",
-      { endpoint_id: endpointId, language, environment },
+      { endpoint_id: endpointId, language, environment, request: request ?? null },
       PORTAL,
     ),
 

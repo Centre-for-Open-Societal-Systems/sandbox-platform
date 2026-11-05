@@ -9,7 +9,7 @@ product in the "Access to Credit (A2C)" category, imported through the same
 service layer as the admin console's "Import spec" action. Every product is
 flagged "served through the API gateway" and its end-points carry no upstream
 URL of their own, so try-it calls go to the gateway configured in .env
-(GATEWAY_ENABLED / GATEWAY_SANDBOX_URL, the local Kong proxy). The credential
+(GATEWAY_ENABLED / GATEWAY_UAT_URL, the local Kong proxy). The credential
 header Kong expects is pre-filled on each end-point. Safe to re-run.
 """
 
@@ -95,7 +95,7 @@ def main() -> None:
             select(Endpoint).where(Endpoint.product_id == product_id, Endpoint.is_deleted.is_(False))
         ).scalars().all()
         for endpoint in endpoints:
-            endpoint.sandbox_api_url = None  # use the gateway from .env
+            endpoint.uat_api_url = None  # use the gateway from .env
             endpoint.is_gateway_published = True
             headers = {
                 name: value
@@ -117,10 +117,10 @@ def main() -> None:
         total += len(endpoints)
         print(f"  {PRODUCT_PREFIX}{tag['name']}: {len(endpoints)} end-points ({result})")
 
-    gateway = settings.GATEWAY_SANDBOX_URL or settings.GATEWAY_BASE_URL
+    gateway = settings.GATEWAY_UAT_URL or settings.GATEWAY_BASE_URL
     print(f"{total} end-points in category '{CATEGORY}', via gateway: {gateway or '(not configured)'}")
     if not settings.GATEWAY_ENABLED or not gateway:
-        print("WARNING: set GATEWAY_ENABLED=true and GATEWAY_SANDBOX_URL in .env, or try-it stays in mock mode.")
+        print("WARNING: set GATEWAY_ENABLED=true and GATEWAY_UAT_URL in .env, or try-it stays in mock mode.")
     db.close()
 
 
