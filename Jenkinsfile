@@ -11,7 +11,8 @@
 //                those images, unless the release already runs exactly them
 //                (deployment/jenkins/deploy.sh)
 //
-// The cron trigger re-pulls oan-helm, so a new chart release, or a change to
+// Builds start when a PR is merged into develop. The 6-hourly timer re-pulls
+// oan-helm, so a new chart release, or a change to
 // charts/oan-sandbox on main while there is no release, is deployed without a
 // sandbox-platform change. Other charts in oan-helm do not cause a redeploy.
 //
@@ -56,10 +57,12 @@ pipeline {
     buildDiscarder(logRotator(numToKeepStr: '30'))
   }
 
-  // Timers only on develop, so branch and PR jobs do not run every 15 minutes.
+  // A merged PR (push to develop) starts the build through the GitHub organization
+  // folder's webhook; no polling. The timer runs develop every 6 hours only to renew
+  // the ECR pull Secret (it expires after 12 hours) and pick up a new oan-helm chart;
+  // it rebuilds or redeploys nothing that is already up to date.
   triggers {
-    pollSCM(env.BRANCH_NAME == null || env.BRANCH_NAME == 'develop' ? 'H/5 * * * *' : '')
-    cron(env.BRANCH_NAME == null || env.BRANCH_NAME == 'develop' ? 'H/15 * * * *' : '')  // new oan-helm versions; keeps the ECR pull Secret fresh
+    cron(env.BRANCH_NAME == null || env.BRANCH_NAME == 'develop' ? 'H H/6 * * *' : '')
   }
 
   parameters {
