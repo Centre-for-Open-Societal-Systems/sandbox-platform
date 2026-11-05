@@ -11,7 +11,8 @@
 //                those images, unless the release already runs exactly them
 //                (deployment/jenkins/deploy.sh)
 //
-// The cron trigger re-pulls oan-helm, so a new chart release, or a change to
+// Builds start when a PR is merged into develop. The 6-hourly timer re-pulls
+// oan-helm, so a new chart release, or a change to
 // charts/oan-sandbox on main while there is no release, is deployed without a
 // sandbox-platform change. Other charts in oan-helm do not cause a redeploy.
 //
@@ -19,10 +20,33 @@
 // from SCM, branch develop); an agent with Docker and git, labelled `docker`,
 // `vpn-agent` or `vpn-agent2`. Only develop pushes images and deploys: other
 // branches and PRs run Versions, Registry checks and Test. Credentials:
-//   aws-ecr         username = AWS access key id, password = secret access key;
+//   aws-ecr-creds   AWS key for ECR: either kind "AWS Credentials" or
+//                   "Username with password" (access key id / secret access key);
 //                   permissions in deployment/jenkins/ecr-policy.json
 //   sandbox-vm-ssh  SSH username + private key for the VM (sandbox-platform-dev.pem)
 //   ghcr-creds      only with PUSH_GHCR: username + PAT (write:packages)
+
+// Exposes AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY from the aws-ecr-creds credential,
+// whichever kind it is. Failures inside body are rethrown, not retried with the other kind.
+def withAws(Closure body) {
+  String AWS_CREDENTIALS_ID = 'aws-ecr-creds'
+  boolean entered = false
+  try {
+    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: AWS_CREDENTIALS_ID,
+                      accessKeyVariable: 'AWS_ACCESS_KEY_ID', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY']]) {
+      entered = true
+      body()
+    }
+  } catch (err) {
+    if (entered) { throw err }
+    echo "${AWS_CREDENTIALS_ID} is not an AWS Credentials entry; using it as username/password."
+    withCredentials([usernamePassword(credentialsId: AWS_CREDENTIALS_ID,
+                                      usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+      body()
+    }
+  }
+}
+
 pipeline {
   agent { label 'docker || vpn-agent || vpn-agent2' }
 
@@ -33,10 +57,12 @@ pipeline {
     buildDiscarder(logRotator(numToKeepStr: '30'))
   }
 
-  // Timers only on develop, so branch and PR jobs do not run every 15 minutes.
+  // A merged PR (push to develop) starts the build through the GitHub organization
+  // folder's webhook; no polling. The timer runs develop every 6 hours only to renew
+  // the ECR pull Secret (it expires after 12 hours) and pick up a new oan-helm chart;
+  // it rebuilds or redeploys nothing that is already up to date.
   triggers {
-    pollSCM(env.BRANCH_NAME == null || env.BRANCH_NAME == 'develop' ? 'H/5 * * * *' : '')
-    cron(env.BRANCH_NAME == null || env.BRANCH_NAME == 'develop' ? 'H/15 * * * *' : '')  // new oan-helm versions; keeps the ECR pull Secret fresh
+    cron(env.BRANCH_NAME == null || env.BRANCH_NAME == 'develop' ? 'H H/6 * * *' : '')
   }
 
   parameters {
@@ -93,24 +119,21 @@ pipeline {
 
     stage('Registry') {
       steps {
-        withCredentials([usernamePassword(credentialsId: 'aws-ecr',
-                                          usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
-          script {
+        script {
+          withAws {
             def account = sh(returnStdout: true, script: '$AWS sts get-caller-identity --query Account --output text').trim()
             env.ECR_REGISTRY = "${account}.dkr.ecr.${env.AWS_REGION}.amazonaws.com"
             env.API_IMAGE = "${env.ECR_REGISTRY}/${env.ECR_REPO_PREFIX}-api:${env.TAG}"
             env.WEB_IMAGE = "${env.ECR_REGISTRY}/${env.ECR_REPO_PREFIX}-web:${env.TAG}"
             echo "Images: ${env.API_IMAGE}, ${env.WEB_IMAGE}"
-          }
-          sh '''
-            $AWS ecr get-login-password | docker login "$ECR_REGISTRY" -u AWS --password-stdin
-            for repo in "$ECR_REPO_PREFIX-api" "$ECR_REPO_PREFIX-web"; do
-              $AWS ecr describe-repositories --repository-names "$repo" >/dev/null 2>&1 \
-                || $AWS ecr create-repository --repository-name "$repo" \
-                     --image-scanning-configuration scanOnPush=true >/dev/null
-            done
-          '''
-          script {
+            sh '''
+              $AWS ecr get-login-password | docker login "$ECR_REGISTRY" -u AWS --password-stdin
+              for repo in "$ECR_REPO_PREFIX-api" "$ECR_REPO_PREFIX-web"; do
+                $AWS ecr describe-repositories --repository-names "$repo" >/dev/null 2>&1 \
+                  || $AWS ecr create-repository --repository-name "$repo" \
+                       --image-scanning-configuration scanOnPush=true >/dev/null
+              done
+            '''
             def pushed = sh(returnStatus: true, script: '''
               for repo in "$ECR_REPO_PREFIX-api" "$ECR_REPO_PREFIX-web"; do
                 $AWS ecr describe-images --repository-name "$repo" --image-ids imageTag="$TAG" >/dev/null 2>&1 || exit 1
@@ -206,9 +229,8 @@ pipeline {
       // Only develop deploys to the sandbox VM.
       when { expression { env.BRANCH_NAME == null || env.BRANCH_NAME == 'develop' } }
       steps {
-        withCredentials([
+        script { withAws { withCredentials([
           sshUserPrivateKey(credentialsId: 'sandbox-vm-ssh', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER'),
-          usernamePassword(credentialsId: 'aws-ecr', usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY'),
         ]) {
           sh '''
             SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 $SSH_USER@$SSH_HOST"
@@ -227,7 +249,7 @@ pipeline {
               CHART_ID='$CHART_ID' HOST='$SANDBOX_HOSTNAME' NAMESPACE='$NAMESPACE' PULL_SECRET=ecr-pull \
               FORCE='$FORCE_DEPLOY' bash -s" < deployment/jenkins/deploy.sh
           '''
-        }
+        } } }
       }
     }
   }
