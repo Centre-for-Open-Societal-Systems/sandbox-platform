@@ -228,7 +228,8 @@ class DashboardEndpointStat(BaseModel):
 
 class DashboardResponse(BaseModel):
     counters: DashboardCounters
-    trend_days: int
+    #: Window of the traffic, health and end-point figures: today, week or month.
+    period: str
     registrations_trend: list[DashboardSeriesPoint] = Field(default_factory=list)
     api_usage_trend: list[DashboardSeriesPoint] = Field(default_factory=list)
     api_health: DashboardApiHealth = Field(default_factory=DashboardApiHealth)

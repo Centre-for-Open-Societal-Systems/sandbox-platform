@@ -31,7 +31,7 @@ export default async function FaqsPage() {
       <PageBanner
         crumb="FAQs"
         title="Frequently asked questions"
-        description="If your question is not answered here, raise a support query from your dashboard."
+        description="If your question is not answered here, raise a support ticket from your dashboard."
         image="/assets/home/hero-tea-farm.webp"
       />
 

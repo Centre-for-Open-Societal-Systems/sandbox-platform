@@ -151,9 +151,11 @@ export interface DashboardEndpointStat {
   avg_latency_ms: number | null;
 }
 
+export type DashboardPeriod = "today" | "week" | "month";
+
 export interface AdminDashboard {
   counters: DashboardCounters;
-  trend_days: number;
+  period: DashboardPeriod;
   registrations_trend: SeriesPoint[];
   api_usage_trend: SeriesPoint[];
   api_health: DashboardApiHealth;

@@ -56,9 +56,9 @@ export default function ContentPage() {
   return (
     <>
       <PageHeader
-        title="CMS"
+        title="Content Management"
         description="Public-facing copy: help content, the participation terms and transactional emails."
-        breadcrumbs={[{ label: "Home", href: "/admin/dashboard" }, { label: "CMS" }]}
+        breadcrumbs={[{ label: "Home", href: "/admin/dashboard" }, { label: "Content Management" }]}
       />
 
       <div className="mb-6 flex flex-wrap gap-1 border-b border-hairline" role="tablist">

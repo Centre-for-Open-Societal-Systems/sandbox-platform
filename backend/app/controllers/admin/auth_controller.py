@@ -68,8 +68,8 @@ def profile(admin: CurrentAdmin, db: DbSession):
 
 
 @router.get("/dashboard")
-def dashboard(admin: CurrentAdmin, db: DbSession):
-    data = log_service.dashboard(db, admin.country_code)
+def dashboard(admin: CurrentAdmin, db: DbSession, period: log_service.DashboardPeriod = "month"):
+    data = log_service.dashboard(db, admin.country_code, period)
     return ok("Dashboard loaded.", data.model_dump())
 
 
