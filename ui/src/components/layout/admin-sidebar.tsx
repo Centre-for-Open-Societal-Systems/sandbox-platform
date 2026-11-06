@@ -88,7 +88,7 @@ export const NAV_SECTIONS: NavSection[] = [
         ],
       },
       { label: "Apps & Keys", icon: KeyRound, href: "/admin/apps", permission: Permission.PARTICIPANT_APPS },
-      { label: "User Queries", icon: MessageSquareText, href: "/admin/queries", permission: Permission.USER_QUERIES },
+      { label: "Support Tickets", icon: MessageSquareText, href: "/admin/queries", permission: Permission.USER_QUERIES },
     ],
   },
   {
@@ -110,7 +110,7 @@ export const NAV_SECTIONS: NavSection[] = [
           { href: "/admin/roles", label: "Manage Roles", permission: Permission.AUM_MANAGE_ROLES },
         ],
       },
-      { label: "CMS", icon: FileText, href: "/admin/content", permission: Permission.CMS },
+      { label: "Content Management", icon: FileText, href: "/admin/content", permission: Permission.CMS },
     ],
   },
   {
@@ -137,10 +137,10 @@ export const NAV_SECTIONS: NavSection[] = [
   },
 ];
 
-const NAV_CAPTION = "px-3.5 pb-1.5 text-[0.7rem] font-semibold tracking-wide uppercase text-nav-active";
+const NAV_CAPTION = "px-3.5 pb-1.5 text-[0.7rem] font-semibold tracking-wide uppercase text-brand-300";
 const NAV_ITEM_BASE = "flex w-full items-center gap-3 rounded-lg px-3.5 py-3 text-[0.95rem] font-medium transition-colors";
-const NAV_ITEM_ACTIVE = "bg-nav-active font-semibold text-white [&_svg]:text-brand-gold";
-const NAV_ITEM_IDLE = "text-ink hover:bg-sidebar-line";
+const NAV_ITEM_ACTIVE = "bg-sidebar-active font-semibold text-white [&_svg]:text-brand-gold";
+const NAV_ITEM_IDLE = "text-white/85 hover:bg-white/10 hover:text-white";
 
 function navItemClass(active: boolean, collapsed: boolean) {
   return cn(NAV_ITEM_BASE, collapsed && "justify-center px-0", active ? NAV_ITEM_ACTIVE : NAV_ITEM_IDLE);
@@ -182,13 +182,13 @@ export function AdminSidebar({ can, collapsed = false, onNavigate, onClose }: Ad
   return (
     <aside className="flex h-full flex-col border-r border-sidebar-line bg-sidebar-bg">
       <div className={cn("flex items-center gap-2.5 pt-6 pb-4", collapsed ? "justify-center px-2.5" : "px-4")}>
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-linear-to-b from-brand-bright to-brand-deep text-white">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-linear-to-b from-brand-bright to-brand-deep text-white ring-1 ring-white/20">
           <Leaf className="h-5 w-5" aria-hidden />
         </span>
         {!collapsed ? (
           <span className="min-w-0 flex-1 leading-tight">
-            <span className="block truncate font-semibold text-brand-deep">{config.siteName}</span>
-            <span className="block text-xs text-subtle">Sandbox console</span>
+            <span className="block truncate font-semibold text-white">{config.siteName}</span>
+            <span className="block text-xs text-white/70">Sandbox Console</span>
           </span>
         ) : null}
         {onClose ? (
@@ -196,7 +196,7 @@ export function AdminSidebar({ can, collapsed = false, onNavigate, onClose }: Ad
             type="button"
             onClick={onClose}
             aria-label="Close menu"
-            className="flex h-[34px] w-[34px] items-center justify-center rounded-lg hover:bg-sidebar-line md:hidden"
+            className="flex h-[34px] w-[34px] items-center justify-center rounded-lg text-white hover:bg-white/10 md:hidden"
           >
             <X className="h-5 w-5" aria-hidden />
           </button>
@@ -283,7 +283,7 @@ function NavGroup({ item, active, isChildActive, onNavigate }: GroupProps) {
         <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-180")} aria-hidden />
       </button>
       {open ? (
-        <div className="mt-1 ml-4 flex flex-col gap-1 border-l border-[#d5e5d5] pl-3">
+        <div className="mt-1 ml-4 flex flex-col gap-1 border-l border-white/15 pl-3">
           {item.children!.map((child) => {
             const childActive = isChildActive(child.href);
             return (
@@ -294,7 +294,7 @@ function NavGroup({ item, active, isChildActive, onNavigate }: GroupProps) {
                 aria-current={childActive ? "page" : undefined}
                 className={cn(
                   "rounded-lg px-3 py-2 text-[0.9rem] transition-colors",
-                  childActive ? "bg-[#dcebdc] font-semibold text-brand-deep" : "text-slate-600 hover:bg-sidebar-line",
+                  childActive ? "bg-white/15 font-semibold text-white" : "text-white/75 hover:bg-white/10 hover:text-white",
                 )}
               >
                 {child.label}
@@ -372,7 +372,7 @@ function RailFlyout({ item, active, isChildActive, onNavigate }: GroupProps) {
                 }}
                 className={cn(
                   "rounded-lg px-3 py-2 text-[0.9rem] transition-colors",
-                  isChildActive(child.href) ? "bg-[#dcebdc] font-semibold text-brand-deep" : "text-slate-600 hover:bg-sidebar-line",
+                  isChildActive(child.href) ? "bg-[#dcebdc] font-semibold text-brand-deep" : "text-slate-600 hover:bg-surface-soft",
                 )}
               >
                 {child.label}

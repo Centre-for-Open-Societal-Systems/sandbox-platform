@@ -7,7 +7,7 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8
 export const config = {
   apiBaseUrl: API_BASE_URL.replace(/\/$/, ""),
   defaultCountry: process.env.NEXT_PUBLIC_DEFAULT_COUNTRY ?? "ET",
-  siteName: process.env.NEXT_PUBLIC_SITE_NAME ?? "Open Agri Net",
+  siteName: process.env.NEXT_PUBLIC_SITE_NAME ?? "EOAN",
 } as const;
 
 /** Storage keys for the two independent sessions the app can hold. */

@@ -164,7 +164,7 @@ services:
         # The browser calls this URL, so it must be reachable from users' machines.
         NEXT_PUBLIC_API_BASE_URL: ${PUBLIC_API_URL:-http://localhost:8010/oan}
         NEXT_PUBLIC_DEFAULT_COUNTRY: ${DEFAULT_COUNTRY_CODE:-ET}
-        NEXT_PUBLIC_SITE_NAME: ${SITE_NAME:-Open Agri Net}
+        NEXT_PUBLIC_SITE_NAME: ${SITE_NAME:-EOAN}
     image: ${IMAGE_PREFIX:-oan-sandbox}-web:${IMAGE_TAG:-latest}
     environment:
       # The Next.js server renders public pages (catalogue, FAQs, home) and must

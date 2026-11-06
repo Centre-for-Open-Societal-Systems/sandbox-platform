@@ -60,7 +60,7 @@ const FOOTER_SECTIONS: FooterSection[] = [
   {
     title: "Support",
     links: [
-      { href: "/participant/support", label: "Support & Queries" },
+      { href: "/participant/support", label: "Help & Support" },
       { href: "/how-it-works", label: "How it works" },
       { href: "/faqs", label: "FAQs" },
       { href: "/terms", label: "Terms & Conditions" },
@@ -304,7 +304,7 @@ function UserMenu({ session, onSignOut }: { session: ParticipantSession; onSignO
             </Link>
             <Link role="menuitem" href="/participant/support" className={itemClass} onClick={() => setOpen(false)}>
               <LifeBuoy className="h-4 w-4 text-subtle" aria-hidden />
-              Support &amp; Queries
+              Help &amp; Support
             </Link>
           </div>
 

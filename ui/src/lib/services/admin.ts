@@ -4,6 +4,7 @@ import type { LookupPage } from "@/components/ui/searchable-multi-select";
 import { api } from "@/lib/api-client";
 import type {
   AdminDashboard,
+  DashboardPeriod,
   AdminInvite,
   AdminParticipantDetail,
   AdminSession,
@@ -44,7 +45,8 @@ export const adminApi = {
 
   profile: () => api.get<AdminUser>("/admin/auth/profile", OPTIONS),
 
-  dashboard: () => api.get<AdminDashboard>("/admin/auth/dashboard", OPTIONS),
+  dashboard: (period: DashboardPeriod) =>
+    api.get<AdminDashboard>(`/admin/auth/dashboard?period=${period}`, OPTIONS),
 
   changePassword: (oldPassword: string, newPassword: string) =>
     api.post<null>(

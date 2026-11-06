@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -36,6 +36,7 @@ from app.schemas.content import (
 from app.utils import exporters
 
 TREND_DAYS = 30
+DashboardPeriod = Literal["today", "week", "month"]
 #: Rows written to a single spreadsheet export.
 EXPORT_ROW_LIMIT = 5000
 
@@ -130,7 +131,23 @@ def export_user_action_logs(
     return exporters.export(rows, exporters.USER_ACTION_COLUMNS, fmt, "User Tracking")
 
 
-def dashboard(db: Session, country_code: str | None = None) -> DashboardResponse:
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _period_start(period: DashboardPeriod, now: datetime) -> datetime:
+    """Midnight UTC today, on this week's Monday, or on the 1st of this month."""
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if period == "today":
+        return midnight
+    if period == "week":
+        return midnight - timedelta(days=midnight.weekday())
+    return midnight.replace(day=1)
+
+
+def dashboard(
+    db: Session, country_code: str | None = None, period: DashboardPeriod = "month"
+) -> DashboardResponse:
     users = ParticipantRepository(db)
     products = ProductRepository(db)
     api_logs = ApiLogRepository(db)
@@ -146,18 +163,20 @@ def dashboard(db: Session, country_code: str | None = None) -> DashboardResponse
         open_queries=ParticipantQueryRepository(db).open_count(),
     )
 
-    since = datetime.now(UTC) - timedelta(days=TREND_DAYS)
+    now = _now()
+    since = _period_start(period, now)
+    hourly = period == "today"
     health = api_logs.health_since(since)
     health["success_rate"] = _rate(health["success"], health["total_calls"])
 
     return DashboardResponse(
         counters=counters,
-        trend_days=TREND_DAYS,
+        period=period,
         registrations_trend=_to_series(
             users.registrations_by_month(country_code=country_code)
         ),
-        api_usage_trend=_fill_days(
-            _to_series(api_logs.usage_by_day(TREND_DAYS)), TREND_DAYS
+        api_usage_trend=_fill_period(
+            _to_series(api_logs.usage_since(since, hourly)), since, now, hourly
         ),
         api_health=DashboardApiHealth(**health),
         top_endpoints=[
@@ -201,12 +220,21 @@ def _rate(part: int | None, total: int | None) -> float | None:
     return round(100 * (part or 0) / total, 1) if total else None
 
 
-def _fill_days(points: list[DashboardSeriesPoint], days: int) -> list[DashboardSeriesPoint]:
-    """One point per day (oldest first) so quiet days plot as zero, not a gap."""
-    by_day = {point.label: point.value for point in points}
-    today = datetime.now(UTC).date()
-    labels = [(today - timedelta(days=offset)).isoformat() for offset in range(days, -1, -1)]
-    return [DashboardSeriesPoint(label=label, value=by_day.get(label, 0)) for label in labels]
+def _fill_period(
+    points: list[DashboardSeriesPoint], since: datetime, now: datetime, hourly: bool
+) -> list[DashboardSeriesPoint]:
+    """One point per hour or day (oldest first) so quiet ones plot as zero, not a gap."""
+    by_bucket = {point.label: point.value for point in points}
+    filled = []
+    if hourly:
+        for hour in range(now.hour + 1):
+            key = f"{since.date().isoformat()} {hour:02d}"
+            filled.append(DashboardSeriesPoint(label=f"{hour:02d}:00", value=by_bucket.get(key, 0)))
+        return filled
+    for offset in range((now.date() - since.date()).days + 1):
+        label = (since.date() + timedelta(days=offset)).isoformat()
+        filled.append(DashboardSeriesPoint(label=label, value=by_bucket.get(label, 0)))
+    return filled
 
 
 def _to_series(rows) -> list[DashboardSeriesPoint]:
