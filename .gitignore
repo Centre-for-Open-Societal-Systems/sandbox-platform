@@ -51,3 +51,6 @@ Thumbs.db
 # ─── Logs ──────────────────────────────────────────────────────────────────
 *.log
 logs/
+# The admin "Logs" section is application code, not runtime output. Without this
+# its pages are never committed and /admin/logs/* is a 404 in deployed builds.
+!ui/src/app/**/logs/
