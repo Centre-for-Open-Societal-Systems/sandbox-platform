@@ -29,10 +29,23 @@
   --color-subtle: #6b7280;
   --color-hairline: #e5e7eb;
   --color-surface-soft: #f1f8f1;
-  --color-sidebar-bg: #f1f9f2;
-  --color-sidebar-line: #e2ede2;
+  --color-sidebar-bg: #0e3b25;
+  --color-sidebar-line: rgb(255 255 255 / 0.12);
+  --color-sidebar-active: #0b8535;
   --color-table-head: #e3fff4;
   --color-btn-outline: #053e27;
+
+  /* Admin dashboard tones: one meaning each, same values as the Badge variants. */
+  --color-tone-people: #2e7d34;
+  --color-tone-people-soft: #e5f4e7;
+  --color-tone-calls: #1a5fa8;
+  --color-tone-calls-soft: #dcebff;
+  --color-tone-pending: #b26a00;
+  --color-tone-pending-soft: #fff1cc;
+  --color-tone-catalogue: #6d4fc2;
+  --color-tone-catalogue-soft: #ece8fb;
+  --color-tone-danger: #da131a;
+  --color-tone-danger-soft: #ffebec;
 
   --color-accent-400: oklch(0.78 0.15 70);
   --color-accent-500: oklch(0.70 0.16 65);

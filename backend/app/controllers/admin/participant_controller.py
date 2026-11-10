@@ -149,7 +149,7 @@ def export(payload: ExportRequest, admin: ManageUsers, db: DbSession):
 
 
 # --------------------------------------------------------------- queries
-#: The User Queries screen; admins who manage participants keep their access.
+#: The Support Tickets screen; admins who manage participants keep their access.
 ManageQueries = Annotated[
     AdminPrincipal,
     Depends(require_any_permission(Permission.USER_QUERIES, Permission.ALL_PARTICIPANTS)),

@@ -122,7 +122,7 @@ PERMISSION_TREE: dict[int, tuple[str, int | None, bool]] = {
     Permission.MAPPER: ("Mapper", Permission.MASTER_ENTRY, False),
     Permission.MANAGE_GEOGRAPHY: ("Manage Geography", Permission.MASTER_ENTRY, False),
     Permission.FAQ_TYPE: ("FAQ Types", Permission.MASTER_ENTRY, False),
-    Permission.USER_QUERIES: ("User Queries", Permission.MASTER_ENTRY, False),
+    Permission.USER_QUERIES: ("Support Tickets", Permission.MASTER_ENTRY, False),
     Permission.CMS: ("Content", None, True),
     Permission.FAQS: ("FAQs", Permission.CMS, False),
     Permission.TERMS_AND_CONDITIONS: ("Terms & Conditions", Permission.CMS, False),

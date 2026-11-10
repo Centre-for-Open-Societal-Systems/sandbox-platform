@@ -72,7 +72,7 @@ export default function UserQueriesPage() {
       ),
     },
     { key: "email_id", header: "Email Id", render: (row) => row.email_id ?? "—" },
-    { key: "query_type", header: "Query Type", sortable: true, render: (row) => queryTypeLabel(row.query_type) },
+    { key: "query_type", header: "Ticket Type", sortable: true, render: (row) => queryTypeLabel(row.query_type) },
     {
       key: "subject",
       header: "Subject",
@@ -90,7 +90,7 @@ export default function UserQueriesPage() {
       header: "Actions",
       render: (row) => (
         <RowActions
-          recordLabel={`query ${row.subject ?? row.query_id}`}
+          recordLabel={`ticket ${row.subject ?? row.query_id}`}
           onView={() => setViewing(row)}
           extra={[{ icon: MessageSquareReply, label: "Reply", onClick: () => openReply(row) }]}
         />
@@ -101,9 +101,9 @@ export default function UserQueriesPage() {
   return (
     <>
       <PageHeader
-        title="User Queries"
-        description="Questions raised from the portal's Support & Queries page. Replies are emailed to the user."
-        breadcrumbs={[{ label: "Home", href: "/admin/dashboard" }, { label: "Participants" }, { label: "User Queries" }]}
+        title="Support Tickets"
+        description="Tickets raised from the portal's Help & Support page. Replies are emailed to the user."
+        breadcrumbs={[{ label: "Home", href: "/admin/dashboard" }, { label: "Participants" }, { label: "Support Tickets" }]}
         search={{
           value: list.searchInput,
           onChange: list.setSearchInput,
@@ -126,7 +126,7 @@ export default function UserQueriesPage() {
             ))}
           </Select>
         </FilterField>
-        <FilterField label="Query Type" htmlFor="query-type">
+        <FilterField label="Ticket Type" htmlFor="query-type">
           <Select
             id="query-type"
             value={list.filters.query_type === undefined ? "" : String(list.filters.query_type)}
@@ -151,8 +151,8 @@ export default function UserQueriesPage() {
         rowKey={(row) => row.query_id}
         pagination={queriesQuery.data?.pagination}
         loading={queriesQuery.isLoading}
-        noun="queries"
-        emptyMessage="No queries match these filters."
+        noun="tickets"
+        emptyMessage="No tickets match these filters."
         sortBy={list.sortBy}
         sortDir={list.sortDir}
         onSortChange={list.handleSortChange}
@@ -164,7 +164,7 @@ export default function UserQueriesPage() {
       <Dialog open={viewing !== null} onOpenChange={(open) => !open && setViewing(null)}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Query Details</DialogTitle>
+            <DialogTitle>Ticket Details</DialogTitle>
             <DialogDescription>{viewing ? formatDateTime(viewing.added_date) : null}</DialogDescription>
           </DialogHeader>
           {viewing ? (
@@ -173,7 +173,7 @@ export default function UserQueriesPage() {
                 ["Name", viewing.participant_name],
                 ["Email ID", viewing.email_id],
                 ["Organisation Name", viewing.company_name],
-                ["Query Type", queryTypeLabel(viewing.query_type)],
+                ["Ticket Type", queryTypeLabel(viewing.query_type)],
               ].map(([label, value]) => (
                 <div key={label}>
                   <dt className="text-xs font-medium text-subtle">{label}</dt>
@@ -224,9 +224,9 @@ export default function UserQueriesPage() {
       <Dialog open={replying !== null} onOpenChange={(open) => !open && setReplying(null)}>
         <DialogContent className="max-w-xl">
           <DialogHeader>
-            <DialogTitle>Reply to Query</DialogTitle>
+            <DialogTitle>Reply to Ticket</DialogTitle>
             <DialogDescription>
-              {replying ? `${replying.subject ?? "Query"} — ${replying.participant_name || replying.email_id || ""}` : null}
+              {replying ? `${replying.subject ?? "Ticket"} — ${replying.participant_name || replying.email_id || ""}` : null}
             </DialogDescription>
           </DialogHeader>
           <form
@@ -256,7 +256,7 @@ export default function UserQueriesPage() {
                 maxLength={4000}
                 value={reply.response}
                 onChange={(event) => setReply({ ...reply, response: event.target.value })}
-                placeholder="Your answer is emailed to the user and shown on their Support page."
+                placeholder="Your answer is emailed to the user and shown on their Help & Support page."
                 required
               />
             </div>

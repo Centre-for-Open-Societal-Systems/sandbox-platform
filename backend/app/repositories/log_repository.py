@@ -268,6 +268,25 @@ class ApiLogRepository(BaseRepository[ApiLog]):
             stmt = stmt.where(ApiLog.participant_id == participant_id)
         return list(self.db.execute(stmt).all())
 
+    def usage_since(self, since: datetime, hourly: bool = False):
+        """Calls per hour ("YYYY-MM-DD HH") or per day ("YYYY-MM-DD") from ``since``."""
+        postgres = self.db.bind is not None and self.db.bind.dialect.name == "postgresql"
+        if hourly:
+            bucket = (
+                func.to_char(ApiLog.log_timestamp, "YYYY-MM-DD HH24")
+                if postgres
+                else func.strftime("%Y-%m-%d %H", ApiLog.log_timestamp)
+            )
+        else:
+            bucket = self._day_expr(ApiLog.log_timestamp)
+        stmt = (
+            select(bucket.label("label"), func.count().label("value"))
+            .where(ApiLog.log_timestamp >= since)
+            .group_by(bucket)
+            .order_by(bucket)
+        )
+        return list(self.db.execute(stmt).all())
+
     def top_endpoints(self, limit: int = 10, participant_id: int | None = None):
         stmt = (
             select(ApiLog.endpoint_url.label("label"), func.count().label("value"))

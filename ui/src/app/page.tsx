@@ -504,7 +504,7 @@ export default async function HomePage() {
                 Questions, Answered
               </h2>
               <p className="mt-4 text-slate-600">
-                Can&apos;t find what you need? Signed-in participants can raise a support query from
+                Can&apos;t find what you need? Signed-in participants can raise a support ticket from
                 their dashboard.
               </p>
               <div className="relative mt-8 hidden aspect-[4/3] overflow-hidden rounded-2xl lg:block">

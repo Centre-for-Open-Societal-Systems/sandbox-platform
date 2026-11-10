@@ -34,7 +34,7 @@ export default function ParticipantSupportPage() {
   const submit = useMutation({
     mutationFn: () => participantApi.createQuery(form.subject.trim(), form.description.trim(), form.queryType),
     onSuccess: (created) => {
-      notify("Your query has been submitted. We will reply by email.", "success");
+      notify("Your ticket has been submitted. We will reply by email.", "success");
       setForm(EMPTY_FORM);
       setOpenId(created.query_id);
       queryClient.invalidateQueries({ queryKey: ["participant", "queries"] });
@@ -52,7 +52,7 @@ export default function ParticipantSupportPage() {
       return;
     }
     if (description.length < DESCRIPTION_MIN) {
-      notify(`Please describe your query in at least ${DESCRIPTION_MIN} characters.`, "warning");
+      notify(`Please describe your issue in at least ${DESCRIPTION_MIN} characters.`, "warning");
       return;
     }
     submit.mutate();
@@ -68,8 +68,8 @@ export default function ParticipantSupportPage() {
       <PageBanner
         inset
         homeHref="/participant/dashboard"
-        crumb="Support & Queries"
-        title="Support & Queries"
+        crumb="Help & Support"
+        title="Help & Support"
         description="Ask the Open Agri Net team about the APIs, your access or anything else. Answers appear here and are emailed to you."
         image="/assets/home/farmers-tomatoes.webp"
       />
@@ -80,7 +80,7 @@ export default function ParticipantSupportPage() {
           <div className="flex items-center gap-2">
             <LifeBuoy className="h-5 w-5 text-brand-bright" aria-hidden />
             <h2 id="new-query" className="text-base font-semibold text-nav-active">
-              Raise a query
+              Raise a ticket
             </h2>
           </div>
 
@@ -128,7 +128,7 @@ export default function ParticipantSupportPage() {
 
             <div className="flex flex-col gap-2">
               <Label htmlFor="query-description" required>
-                Your query
+                Describe your issue
               </Label>
               <Textarea
                 id="query-description"
@@ -148,7 +148,7 @@ export default function ParticipantSupportPage() {
 
             <Button type="submit" loading={submit.isPending}>
               <Send className="h-4 w-4" aria-hidden />
-              Submit query
+              Submit ticket
             </Button>
             <p className="text-xs text-subtle">
               Looking for quick answers? See the{" "}
@@ -164,7 +164,7 @@ export default function ParticipantSupportPage() {
         <section className="rounded-2xl border border-hairline bg-white p-6 shadow-sm" aria-labelledby="my-queries">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 id="my-queries" className="text-base font-semibold text-nav-active">
-              Your queries
+              Your tickets
             </h2>
             {queries.length ? (
               <span className="text-xs text-subtle">
@@ -176,16 +176,16 @@ export default function ParticipantSupportPage() {
           {queriesQuery.isLoading ? (
             <div className="flex items-center justify-center gap-2 py-16 text-sm text-subtle">
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-              Loading your queries…
+              Loading your tickets…
             </div>
           ) : queriesQuery.isError ? (
             <p className="py-16 text-center text-sm text-red-600">{(queriesQuery.error as Error).message}</p>
           ) : queries.length === 0 ? (
             <div className="flex flex-col items-center gap-2 py-16 text-center">
               <Inbox className="h-9 w-9 text-slate-300" aria-hidden />
-              <p className="text-sm font-semibold text-ink">No queries yet</p>
+              <p className="text-sm font-semibold text-ink">No tickets yet</p>
               <p className="max-w-sm text-sm text-subtle">
-                Queries you raise appear here with their status and our reply.
+                Tickets you raise appear here with their status and our reply.
               </p>
             </div>
           ) : (
