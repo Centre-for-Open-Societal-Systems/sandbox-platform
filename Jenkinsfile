@@ -17,8 +17,8 @@
 // sandbox-platform change. Other charts in oan-helm do not cause a redeploy.
 //
 // Jenkins setup: the sandbox.platform GitHub Organization Folder (or a Pipeline
-// from SCM, branch develop); an agent with Docker and git, labelled `docker`,
-// `vpn-agent` or `vpn-agent2`. Only develop pushes images and deploys: other
+// from SCM, branch develop); the on-demand agent labelled `oan-ci-deploy` (Docker,
+// git, a public IP the VM accepts SSH from). Only develop pushes images and deploys: other
 // branches and PRs run Versions, Registry checks and Test. Credentials:
 //   aws-ecr-creds   AWS key for ECR: either kind "AWS Credentials" or
 //                   "Username with password" (access key id / secret access key);
@@ -48,10 +48,12 @@ def withAws(Closure body) {
 }
 
 pipeline {
-  agent { label 'docker || vpn-agent || vpn-agent2' }
+  agent { label 'oan-ci-deploy' }
 
   options {
     disableConcurrentBuilds()
+    // Agents are on-demand machines: if one is lost mid-build, run the build again.
+    retry(count: 2, conditions: [agent(), nonresumable()])
     timestamps()
     timeout(time: 90, unit: 'MINUTES')
     buildDiscarder(logRotator(numToKeepStr: '30'))
@@ -187,9 +189,13 @@ pipeline {
         sh '''
           api_latest="$ECR_REGISTRY/$ECR_REPO_PREFIX-api:develop"
           web_latest="$ECR_REGISTRY/$ECR_REPO_PREFIX-web:develop"
-          docker build -f docker/sandbox-api/Dockerfile -t "$API_IMAGE" -t "$api_latest" .
+          # Agents start with an empty Docker cache: reuse layers from the develop images in
+          # ECR (inline cache metadata). A missing cache image is not an error.
+          docker build --build-arg BUILDKIT_INLINE_CACHE=1 --cache-from "$api_latest" \
+            -f docker/sandbox-api/Dockerfile -t "$API_IMAGE" -t "$api_latest" .
           # The browser API URL is built into the web image (one image per environment).
           docker build -t "$WEB_IMAGE" -t "$web_latest" \
+            --build-arg BUILDKIT_INLINE_CACHE=1 --cache-from "$web_latest" \
             --build-arg NEXT_PUBLIC_API_BASE_URL="https://$SANDBOX_HOSTNAME/oan" \
             --build-arg NEXT_PUBLIC_DEFAULT_COUNTRY=ET \
             --build-arg NEXT_PUBLIC_SITE_NAME="Open Agri Net" ui
@@ -234,11 +240,11 @@ pipeline {
         ]) {
           sh '''
             # The VM's host keys are pinned in the repo (works on any OpenSSH; accept-new
-            # needs 7.6+ and vpn-agent2 has 7.4). If the VM is rebuilt, refresh the file:
+            # needs 7.6+). If the VM is rebuilt, refresh the file:
             #   ssh-keyscan -t ed25519,ecdsa,rsa $SSH_HOST > deployment/jenkins/known_hosts
             SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$WORKSPACE/deployment/jenkins/known_hosts -o ServerAliveInterval=30 $SSH_USER@$SSH_HOST"
 
-            # ECR passwords last 12 hours: every run (cron every 15 minutes) renews the
+            # ECR passwords last 12 hours: every run (cron every 6 hours) renews the
             # pull Secret, so pods restarted later can still pull.
             $AWS ecr get-login-password | $SSH "kubectl -n $NAMESPACE create secret docker-registry ecr-pull \
               --docker-server=$ECR_REGISTRY --docker-username=AWS --docker-password=\\"\\$(cat)\\" \
