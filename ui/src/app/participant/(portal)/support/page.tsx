@@ -3,18 +3,19 @@
 import * as React from "react";
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, Inbox, LifeBuoy, Loader2, MessageSquareReply, Send } from "lucide-react";
+import { CheckCircle2, ChevronDown, Inbox, LifeBuoy, Loader2, Send } from "lucide-react";
 
 import { PageBanner } from "@/components/layout/page-banner";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { TicketThread } from "@/components/support/ticket-thread";
 import { QueryStatusBadge } from "@/components/ui/status-badge";
 import { useToast } from "@/components/ui/toast";
 import { participantApi } from "@/lib/services/participant";
 import { QUERY_TYPES, queryTypeLabel } from "@/lib/support";
 import { cn, formatDateTime } from "@/lib/utils";
-import type { SupportQuery } from "@/types/api";
+import type { SupportQuery, SupportThread } from "@/types/api";
 
 const DESCRIPTION_MIN = 10;
 const DESCRIPTION_MAX = 4000;
@@ -37,7 +38,7 @@ export default function ParticipantSupportPage() {
       notify("Your ticket has been submitted. We will reply by email.", "success");
       setForm(EMPTY_FORM);
       setOpenId(created.query_id);
-      queryClient.invalidateQueries({ queryKey: ["participant", "queries"] });
+      void queryClient.invalidateQueries({ queryKey: ["participant", "queries"] });
     },
     onError: (error: Error) => notify(error.message, "error"),
   });
@@ -62,6 +63,7 @@ export default function ParticipantSupportPage() {
     (a, b) => new Date(b.added_date ?? 0).getTime() - new Date(a.added_date ?? 0).getTime(),
   );
   const openCount = queries.filter((item) => item.status === 0 || item.status === 1).length;
+  const unreadCount = queries.filter((item) => item.unread).length;
 
   return (
     <div>
@@ -169,6 +171,7 @@ export default function ParticipantSupportPage() {
             {queries.length ? (
               <span className="text-xs text-subtle">
                 {queries.length} total · {openCount} awaiting a reply
+                {unreadCount ? ` · ${unreadCount} with a new reply` : ""}
               </span>
             ) : null}
           </div>
@@ -208,6 +211,44 @@ export default function ParticipantSupportPage() {
 
 function QueryItem({ item, open, onToggle }: { item: SupportQuery; open: boolean; onToggle: () => void }) {
   const panelId = `query-${item.query_id}`;
+  const queryClient = useQueryClient();
+  const { notify } = useToast();
+  const [draft, setDraft] = React.useState("");
+
+  const thread = useQuery({
+    queryKey: ["participant", "query", item.query_id],
+    queryFn: () => participantApi.getQuery(item.query_id),
+    enabled: open,
+  });
+
+  function refreshed(data: SupportThread) {
+    queryClient.setQueryData(["participant", "query", item.query_id], data);
+    void queryClient.invalidateQueries({ queryKey: ["participant", "queries"] });
+  }
+
+  const reply = useMutation({
+    mutationFn: () => participantApi.replyToQuery(item.query_id, draft.trim()),
+    onSuccess: (data) => {
+      setDraft("");
+      notify("Your reply has been sent.", "success");
+      refreshed(data);
+    },
+    onError: (error: Error) => notify(error.message, "error"),
+  });
+
+  const close = useMutation({
+    mutationFn: () => participantApi.closeQuery(item.query_id),
+    onSuccess: (data) => {
+      notify("Ticket closed.", "success");
+      refreshed(data);
+    },
+    onError: (error: Error) => notify(error.message, "error"),
+  });
+
+  const status = thread.data?.status ?? item.status;
+  const closed = status === 3;
+  const waiting = item.due_date && (item.status === 0 || item.status === 1);
+
   return (
     <li className="rounded-xl border border-hairline">
       <button
@@ -218,9 +259,17 @@ function QueryItem({ item, open, onToggle }: { item: SupportQuery; open: boolean
         className="flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-slate-50"
       >
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold text-ink">{item.subject ?? "(no subject)"}</p>
+          <p className="flex items-center gap-2 truncate text-sm font-semibold text-ink">
+            {item.unread ? (
+              <span className="h-2 w-2 shrink-0 rounded-full bg-brand-bright" title="New reply" aria-label="New reply" />
+            ) : null}
+            <span className="truncate">{item.subject ?? "(no subject)"}</span>
+          </p>
           <p className="mt-0.5 text-xs text-subtle">
+            {item.ticket_no ? `${item.ticket_no} · ` : ""}
             {queryTypeLabel(item.query_type)} · {formatDateTime(item.added_date)}
+            {item.message_count && item.message_count > 1 ? ` · ${item.message_count} messages` : ""}
+            {waiting ? ` · we aim to answer by ${formatDateTime(item.due_date)}` : ""}
           </p>
         </div>
         <QueryStatusBadge status={item.status} />
@@ -231,19 +280,56 @@ function QueryItem({ item, open, onToggle }: { item: SupportQuery; open: boolean
       </button>
 
       {open ? (
-        <div id={panelId} className="border-t border-hairline px-4 py-3 text-sm">
-          <p className="whitespace-pre-wrap break-words text-slate-700">{item.description}</p>
-          {item.response ? (
-            <div className="mt-3 rounded-lg border border-brand-bright/20 bg-brand-50 p-3">
-              <p className="flex items-center gap-1.5 text-xs font-semibold text-brand-deep">
-                <MessageSquareReply className="h-3.5 w-3.5" aria-hidden />
-                Reply from the OAN team · {formatDateTime(item.responded_date)}
-              </p>
-              <p className="mt-1.5 whitespace-pre-wrap break-words text-slate-700">{item.response}</p>
+        <div id={panelId} className="border-t border-hairline px-4 py-4 text-sm">
+          {thread.isLoading ? (
+            <div className="flex items-center gap-2 py-6 text-subtle">
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+              Loading the conversation…
             </div>
-          ) : (
-            <p className="mt-3 text-xs text-subtle">No reply yet. We will email you when the team answers.</p>
-          )}
+          ) : thread.isError ? (
+            <p className="text-red-600">{(thread.error as Error).message}</p>
+          ) : thread.data ? (
+            <>
+              <TicketThread messages={thread.data.messages} viewer="participant" />
+              {closed ? (
+                <p className="mt-4 rounded-lg bg-slate-50 p-3 text-xs text-subtle">
+                  This ticket is closed. If you still need help, raise a new ticket.
+                </p>
+              ) : (
+                <form
+                  className="mt-4 flex flex-col gap-2"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    if (draft.trim()) reply.mutate();
+                  }}
+                >
+                  <Label htmlFor={`reply-${item.query_id}`}>Your reply</Label>
+                  <Textarea
+                    id={`reply-${item.query_id}`}
+                    rows={3}
+                    maxLength={DESCRIPTION_MAX}
+                    value={draft}
+                    onChange={(event) => setDraft(event.target.value)}
+                    placeholder={
+                      thread.data.messages.length > 1
+                        ? "Write back to the OAN team…"
+                        : "Add more detail to this ticket…"
+                    }
+                  />
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <Button type="button" variant="ghost" size="sm" loading={close.isPending} onClick={() => close.mutate()}>
+                      <CheckCircle2 className="h-4 w-4" aria-hidden />
+                      Mark as resolved
+                    </Button>
+                    <Button type="submit" size="sm" loading={reply.isPending} disabled={!draft.trim()}>
+                      <Send className="h-4 w-4" aria-hidden />
+                      Send reply
+                    </Button>
+                  </div>
+                </form>
+              )}
+            </>
+          ) : null}
         </div>
       ) : null}
     </li>

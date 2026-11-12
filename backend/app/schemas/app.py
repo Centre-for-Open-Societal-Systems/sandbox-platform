@@ -9,19 +9,10 @@ from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 
 from app.config.settings import settings
-from app.models.enums import ApprovalType
+from app.models.enums import ApprovalType, Environment
 from app.schemas.common import ListQuery, ORMModel
 
 _PRODUCT_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$")
-
-
-def _clean_url(value: str | None) -> str | None:
-    if value is None or not value.strip():
-        return None
-    value = value.strip()
-    if not value.lower().startswith(("https://", "http://")):
-        raise ValueError("Callback URL must start with https:// or http://")
-    return value
 
 
 def _clean_ips(value: list[str] | None) -> list[str] | None:
@@ -118,7 +109,6 @@ class ApiProductDetailOut(ApiProductOut):
 class AppCreate(BaseModel):
     name: str = Field(..., min_length=2, max_length=100)
     description: str | None = Field(None, max_length=1000)
-    callback_url: str | None = Field(None, max_length=1000)
     #: ``api_product_id`` values from ``GET /participant/api-products``.
     api_product_ids: list[int] = Field(default_factory=list)
     #: Optional IP whitelist for the app's keys; empty = any address.
@@ -132,11 +122,6 @@ class AppCreate(BaseModel):
             raise ValueError("App name is too short.")
         return v
 
-    @field_validator("callback_url")
-    @classmethod
-    def _url(cls, v: str | None) -> str | None:
-        return _clean_url(v)
-
     @field_validator("allowed_ips")
     @classmethod
     def _ips(cls, v: list[str]) -> list[str]:
@@ -146,7 +131,6 @@ class AppCreate(BaseModel):
 class AppUpdate(BaseModel):
     name: str | None = Field(None, min_length=2, max_length=100)
     description: str | None = Field(None, max_length=1000)
-    callback_url: str | None = Field(None, max_length=1000)
     allowed_ips: list[str] | None = None
 
     @field_validator("allowed_ips")
@@ -159,10 +143,19 @@ class AppUpdate(BaseModel):
     def _strip(cls, v: str | None) -> str | None:
         return " ".join(v.split()) if v else v
 
-    @field_validator("callback_url")
+
+class AppPromote(BaseModel):
+    """"Move to production": what differs from the UAT app. A field left out is copied
+    from the UAT app; production servers often have other addresses."""
+
+    description: str | None = Field(None, max_length=1000)
+    #: Production's IP whitelist; empty = any address.
+    allowed_ips: list[str] | None = None
+
+    @field_validator("allowed_ips")
     @classmethod
-    def _url(cls, v: str | None) -> str | None:
-        return _clean_url(v)
+    def _ips(cls, v: list[str] | None) -> list[str] | None:
+        return _clean_ips(v)
 
 
 class AppProductsRequest(BaseModel):
@@ -202,6 +195,10 @@ class AppCredentialOut(BaseModel):
     issued_date: datetime | None = None
     revoked_date: datetime | None = None
     last_used_date: datetime | None = None
+    #: The key stops working then (null = never).
+    expires_date: datetime | None = None
+    #: The secret was already shown; it cannot be shown again (rotate for a new one).
+    secret_viewed: bool = False
 
 
 class IssuedCredentialOut(AppCredentialOut):
@@ -215,7 +212,6 @@ class AppOut(BaseModel):
     app_id: str
     name: str
     description: str | None = None
-    callback_url: str | None = None
     environment: str
     status: int
     status_label: str
@@ -224,6 +220,10 @@ class AppOut(BaseModel):
     #: Limits the gateway applies to this app (null = none), from its approved products.
     rate_limit_per_minute: int | None = None
     quota_per_day: int | None = None
+    #: Calls logged in the last minute / 24 hours, when the matching limit is set (approximate:
+    #: the gateway's own counter is the one that enforces; a call may take a moment to appear).
+    calls_last_minute: int | None = None
+    calls_today: int | None = None
     gateway_consumer: str | None = None
     gateway_status: str
     gateway_error: str | None = None
@@ -259,6 +259,8 @@ class AdminAppListQuery(ListQuery):
     api_product_id: int | None = None
     #: Only apps with at least one product request awaiting a decision.
     pending_only: bool = False
+    #: UAT or PRODUCTION apps only; empty = both.
+    environment: Environment | None = None
 
 
 class SubscriptionDecision(BaseModel):

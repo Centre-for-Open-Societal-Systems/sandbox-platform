@@ -95,6 +95,8 @@ def execute(
     headers = _build_headers(payload.headers, participant, payload.environment)
     app_id = None
     if payload.app_id:
+        # A UAT app's keys work only on UAT, a production app's only on production.
+        app_service.assert_app_environment(db, participant, payload.app_id, payload.environment)
         # Call as one of the participant's apps: the gateway sees its API key
         # and applies that app's API product grants.
         headers = {
@@ -260,8 +262,14 @@ def code_sample(
             if k.lower() not in (token_header.lower(), settings.GATEWAY_APP_KEY_HEADER.lower())
         }
         declared[token_header] = typed or "<app access token>"
-    elif form is not None and form.app_id and participant is not None:
-        # The participant's own key, so the snippet runs as-is in Postman.
+    elif (
+        form is not None
+        and form.app_id
+        and participant is not None
+        and app_service.app_environment(db, participant, form.app_id) == str(environment)
+    ):
+        # The participant's own key, so the snippet runs as-is in Postman (only an app
+        # of this environment: another environment's key would not work here).
         key_header = settings.GATEWAY_APP_KEY_HEADER
         declared = {k: v for k, v in declared.items() if k.lower() != key_header.lower()}
         declared[key_header] = app_service.app_key(db, participant, form.app_id)
@@ -296,6 +304,13 @@ def _require_published_endpoint(db: Session, endpoint_id: int) -> Endpoint:
     if endpoint is None or not endpoint.is_published:
         raise NotFoundError("Endpoint not found.")
     return endpoint
+
+
+def assert_environment_allowed(
+    participant: Participant, environment: Environment
+) -> None:
+    """403 unless the account is approved for ``environment``."""
+    _assert_environment_allowed(participant, environment)
 
 
 def _assert_environment_allowed(
@@ -421,6 +436,12 @@ def _upstream_base(endpoint: Endpoint, environment: Environment) -> str | None:
     if endpoint.is_gateway_published or endpoint.product.is_gateway_published:
         return gateway_url(environment)
     return None
+
+
+def endpoint_base_url(endpoint: Endpoint, environment: Environment) -> str | None:
+    """The public base URL partners call this endpoint on in ``environment`` (None: no upstream yet)."""
+    base = _upstream_base(endpoint, environment)
+    return public_url(base.rstrip("/"), environment) if base else None
 
 
 def gateway_url(environment: Environment) -> str | None:

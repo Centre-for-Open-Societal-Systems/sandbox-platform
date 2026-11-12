@@ -129,12 +129,19 @@ def _admin_row(client, admin_headers, app_uid) -> dict:
 
 
 def _approve_app(client, admin_headers, participant_headers, app_uid, remarks=None):
-    """The administrator approves the whole app; returns the owner's view: app + its first key."""
+    """The administrator approves the whole app; returns the owner's view: app + its first key,
+    with the secret the owner takes once (the first "Reveal")."""
     row = _admin_row(client, admin_headers, app_uid)
     approved = client.post(f"/oan/admin/apps/{row['id']}/approve", headers=admin_headers, json={"remarks": remarks})
     assert approved.status_code == 200, approved.text
     app = client.get(f"/oan/participant/apps/{app_uid}", headers=participant_headers).json()["data"]
-    return {"app": app, "credential": app["credentials"][0]}
+    listed = app["credentials"][0]
+    assert listed["api_secret"] is None and listed["secret_viewed"] is False  # never in the list
+    revealed = client.post(
+        f"/oan/participant/apps/{app_uid}/credentials/{listed['credential_id']}/reveal", headers=participant_headers
+    )
+    assert revealed.status_code == 200, revealed.text
+    return {"app": app, "credential": revealed.json()["data"]}
 
 
 # ------------------------------------------------------------- API products
@@ -278,7 +285,8 @@ def test_approved_app_has_encrypted_key_and_provisions_gateway(
     # The owner reads key and secret from the app; administrators get neither.
     listed = client.get("/oan/participant/apps", headers=participant_headers).json()["data"][0]
     assert listed["credentials"][0]["api_key"] == credential["api_key"]
-    assert listed["credentials"][0]["api_secret"] == credential["api_secret"]
+    assert listed["credentials"][0]["api_secret"] is None  # shown once, at "Reveal"
+    assert listed["credentials"][0]["secret_viewed"] is True
     assert listed["credentials"][0]["api_secret_hint"] == "••••" + credential["api_secret"][-4:]
     admin_view = _admin_row(client, admin_headers, app["app_id"])
     assert admin_view["credentials"][0]["api_key"] is None and admin_view["credentials"][0]["api_secret"] is None

@@ -16,13 +16,19 @@ Lifecycle (Apigee "developer app"):
 4. Every change is written to the gateway (``app_gateway_service``); the key
    works there only for the routes of approved products.
 5. Keys are rotated by issuing a second credential and revoking the first.
+6. Apps live in one environment. A participant creates UAT apps; once approved
+   for production, "Move to production" makes a production copy of a UAT app
+   (same name, same API products) with its own keys. A production app and
+   every product request on it wait for an administrator, whatever the
+   product's approval type, and work only on production.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config.settings import settings
@@ -35,8 +41,9 @@ from app.core.exceptions import (
     NotFoundError,
     ValidationError,
 )
+from app.core.logging import get_logger
 from app.core.pagination import Page
-from app.integrations import keycloak
+from app.integrations import keycloak, keycloak_oidc
 from app.models.app import (
     ApiProduct,
     ParticipantApp,
@@ -51,6 +58,7 @@ from app.models.enums import (
     GatewaySyncStatus,
     SubscriptionStatus,
 )
+from app.models.logs import ApiLog
 from app.models.participant import Participant
 from app.repositories.app_repository import (
     ApiProductRepository,
@@ -66,6 +74,7 @@ from app.schemas.app import (
     AppCreatedOut,
     AppCredentialOut,
     AppOut,
+    AppPromote,
     AppSubscriptionOut,
     AppUpdate,
     IssuedCredentialOut,
@@ -73,6 +82,8 @@ from app.schemas.app import (
 from app.services import app_gateway_service, audit_service
 from app.services.audit_service import Action
 from app.services.notification_service import TemplateCode, send_templated
+
+logger = get_logger(__name__)
 
 APP_STATUS_LABELS = {
     int(AppStatus.PENDING): "Awaiting approval",
@@ -86,7 +97,11 @@ SUBSCRIPTION_LABELS = {
     int(SubscriptionStatus.REJECTED): "Rejected",
     int(SubscriptionStatus.REVOKED): "Revoked",
 }
-CREDENTIAL_LABELS = {int(CredentialStatus.ACTIVE): "Active", int(CredentialStatus.REVOKED): "Revoked"}
+CREDENTIAL_LABELS = {
+    int(CredentialStatus.ACTIVE): "Active",
+    int(CredentialStatus.REVOKED): "Revoked",
+    int(CredentialStatus.EXPIRED): "Expired",
+}
 
 
 # ============================================================ participant
@@ -134,7 +149,6 @@ def create_app(db: Session, principal: ParticipantPrincipal, payload: AppCreate)
         participant_id=participant.participant_id,
         name=payload.name,
         description=payload.description,
-        callback_url=payload.callback_url,
         allowed_ips=payload.allowed_ips,
         environment=environment,
         # No key and nothing at the gateway until an administrator approves.
@@ -158,6 +172,64 @@ def create_app(db: Session, principal: ParticipantPrincipal, payload: AppCreate)
     return AppCreatedOut(app=app_out(db, app, reveal_key=True), credential=None)
 
 
+def promote_app(
+    db: Session, principal: ParticipantPrincipal, app_uid: str, payload: AppPromote | None = None
+) -> AppCreatedOut:
+    """"Move to production": a production copy of a UAT app with its own keys.
+
+    Same name and the API products the UAT app was granted (or still asks for).
+    Description and IP whitelist are the UAT app's unless ``payload`` gives
+    production's own (its servers often have other addresses). It waits for an administrator - the
+    app and each product, whatever its approval type - and gets its own API key
+    + secret at approval. The UAT app is left as it is.
+    """
+    participant = principal.participant
+    if not app_gateway_service.production_access(participant):
+        raise ForbiddenError("Your account needs production access before you can move an app to production.")
+    source = _owned(db, participant, app_uid, active_only=True)
+    if str(source.environment) != str(Environment.UAT):
+        raise ValidationError("Only a UAT app can be moved to production.")
+    repo = ParticipantAppRepository(db)
+    environment = str(Environment.PRODUCTION)
+    if repo.name_taken(participant.participant_id, source.name, environment):
+        raise ConflictError(f"You already have a production app named '{source.name}'.")
+    if repo.count(participant_id=participant.participant_id) >= settings.MAX_APPS_PER_PARTICIPANT:
+        raise ValidationError(f"You can have at most {settings.MAX_APPS_PER_PARTICIPANT} apps.")
+    given = payload.model_dump(exclude_unset=True) if payload else {}
+    description = given.get("description", source.description)
+    allowed_ips = given.get("allowed_ips", list(source.allowed_ips or []))
+    wanted = {int(SubscriptionStatus.APPROVED), int(SubscriptionStatus.PENDING)}
+    products = [
+        s.api_product for s in sorted(source.subscriptions, key=lambda s: s.id or 0)
+        if s.status in wanted and s.api_product.is_published and not s.api_product.is_deleted
+    ]
+    app = ParticipantApp(
+        participant_id=participant.participant_id,
+        name=source.name,
+        description=description,
+        allowed_ips=list(allowed_ips or []),
+        environment=environment,
+        status=int(AppStatus.PENDING),
+        gateway_status=str(GatewaySyncStatus.PENDING),
+        added_by=participant.participant_id,
+        modify_by=participant.participant_id,
+    )
+    db.add(app)
+    db.flush()
+    app.gateway_consumer = app_gateway_service.consumer_name(app)
+    for product in products:
+        _request_product(app, product, participant.participant_id)
+    db.commit()
+
+    audit_service.record_participant(
+        db, principal, Action.APP_PROMOTE, entity="participant_app", entity_id=app.app_id,
+        description=f"Moved app '{source.name}' to production requesting {len(products)} API product(s); "
+        "awaiting approval",
+    )
+    app_gateway_service.sync_app(db, app)
+    return AppCreatedOut(app=app_out(db, app, reveal_key=True), credential=None)
+
+
 def update_app(db: Session, principal: ParticipantPrincipal, app_uid: str, payload: AppUpdate) -> AppOut:
     app = _owned(db, principal.participant, app_uid)
     if payload.name and payload.name != app.name:
@@ -167,8 +239,6 @@ def update_app(db: Session, principal: ParticipantPrincipal, app_uid: str, paylo
     fields = payload.model_dump(exclude_unset=True)
     if "description" in fields:
         app.description = payload.description
-    if "callback_url" in fields:
-        app.callback_url = payload.callback_url
     ips_changed = payload.allowed_ips is not None and payload.allowed_ips != list(app.allowed_ips or [])
     if ips_changed:
         app.allowed_ips = payload.allowed_ips
@@ -241,13 +311,150 @@ def issue_credential(db: Session, principal: ParticipantPrincipal, app_uid: str)
             f"An app can have {settings.MAX_ACTIVE_CREDENTIALS_PER_APP} active keys. Revoke one first."
         )
     credential = _new_credential(app, principal.id)
+    credential.secret_viewed_date = datetime.now(UTC)  # returned in clear right here
     db.commit()
     audit_service.record_participant(
         db, principal, Action.APP_CREDENTIAL_ISSUE, entity="participant_app", entity_id=app.app_id,
         description=f"Issued key {credential.api_key_prefix}… for app '{app.name}'",
     )
     app_gateway_service.sync_app(db, app)
+    _notify_key(db, app, TemplateCode.APP_KEY_ISSUED, credential)
     return _issued(credential)
+
+
+def rotate_credential(
+    db: Session, principal: ParticipantPrincipal, app_uid: str, credential_uid: str
+) -> IssuedCredentialOut:
+    """Replace a key (standard rotation): a new key is issued at once, the old one keeps
+    working for ``APP_KEY_ROTATION_GRACE_DAYS`` so the partner can switch over, then expires."""
+    app = _owned(db, principal.participant, app_uid, active_only=True)
+    old = next((c for c in app.credentials if str(c.unique_id) == credential_uid), None)
+    if old is None:
+        raise NotFoundError("Key not found.")
+    if not app_gateway_service.credential_is_live(old):
+        raise ValidationError("Only an active key can be rotated.")
+    if AppCredentialRepository(db).active_count(app.app_id) >= settings.MAX_ACTIVE_CREDENTIALS_PER_APP:
+        raise ValidationError(
+            f"An app can have {settings.MAX_ACTIVE_CREDENTIALS_PER_APP} active keys. Revoke one first, "
+            "then rotate."
+        )
+    now = datetime.now(UTC)
+    grace = max(0, settings.APP_KEY_ROTATION_GRACE_DAYS)
+    if grace:
+        ends = now + timedelta(days=grace)
+        if old.expires_date is None or _aware(old.expires_date) > ends:
+            old.expires_date = ends
+        old.expiry_notified_date = None
+    else:
+        old.status, old.revoked_date = int(CredentialStatus.REVOKED), now
+    old.modify_by = principal.id
+    new = _new_credential(app, principal.id)
+    new.secret_viewed_date = now  # returned in clear right here
+    db.commit()
+    audit_service.record_participant(
+        db, principal, Action.APP_CREDENTIAL_ROTATE, entity="participant_app", entity_id=app.app_id,
+        description=f"Rotated key {old.api_key_prefix}… to {new.api_key_prefix}… for app '{app.name}'",
+    )
+    app_gateway_service.sync_app(db, app)
+    _notify_key(
+        db, app, TemplateCode.APP_KEY_ROTATED, new,
+        old_key_prefix=old.api_key_prefix,
+        grace=(
+            f"The old key keeps working until {_when(old.expires_date)}; switch your systems before then."
+            if grace
+            else "The old key is revoked."
+        ),
+    )
+    return _issued(new)
+
+
+def reveal_credential(
+    db: Session, principal: ParticipantPrincipal, app_uid: str, credential_uid: str
+) -> IssuedCredentialOut:
+    """Show a key's secret in clear - once. The first approval issues the key while the
+    owner is away, so the owner takes the secret here; after that, only rotation gives a new one."""
+    app = _owned(db, principal.participant, app_uid, active_only=True)
+    credential = next((c for c in app.credentials if str(c.unique_id) == credential_uid), None)
+    if credential is None:
+        raise NotFoundError("Key not found.")
+    if not app_gateway_service.credential_is_live(credential):
+        raise ValidationError("Only an active key has a secret to show.")
+    if credential.secret_viewed_date is not None:
+        raise ConflictError(
+            "The secret of this key was already shown and cannot be shown again. Rotate the key to get a new one."
+        )
+    credential.secret_viewed_date = datetime.now(UTC)
+    credential.modify_by = principal.id
+    db.commit()
+    audit_service.record_participant(
+        db, principal, Action.APP_CREDENTIAL_REVEAL, entity="participant_app", entity_id=app.app_id,
+        description=f"Viewed the secret of key {credential.api_key_prefix}… of app '{app.name}'",
+    )
+    return _issued(credential)
+
+
+def run_key_maintenance(db: Session) -> dict[str, int]:
+    """Expire keys past their date (gateway and Keycloak drop them) and warn the owners of
+    keys about to expire. Safe to run often; a second run finds nothing new."""
+    repo = AppCredentialRepository(db)
+    now = datetime.now(UTC)
+    expired = repo.past_expiry(now)
+    apps: dict[int, ParticipantApp] = {}
+    for credential in expired:
+        credential.status, credential.revoked_date = int(CredentialStatus.EXPIRED), now
+        apps[credential.app_id] = credential.app
+    db.commit()
+    for credential in expired:
+        app = credential.app
+        audit_service.record(
+            db, Action.APP_CREDENTIAL_EXPIRE, entity="participant_app", entity_id=app.app_id,
+            description=f"Key {credential.api_key_prefix}… of app '{app.name}' expired",
+        )
+        _notify_key(db, app, TemplateCode.APP_KEY_EXPIRED, credential)
+    for app in apps.values():
+        app_gateway_service.sync_app(db, app)
+
+    warned = 0
+    if settings.APP_KEY_EXPIRY_WARN_DAYS > 0:
+        for credential in repo.expiring_before(now, now + timedelta(days=settings.APP_KEY_EXPIRY_WARN_DAYS)):
+            credential.expiry_notified_date = now
+            _notify_key(
+                db, credential.app, TemplateCode.APP_KEY_EXPIRING, credential,
+                expires=_when(credential.expires_date),
+            )
+            warned += 1
+        db.commit()
+    return {"expired": len(expired), "warned": warned}
+
+
+def _aware(moment: datetime) -> datetime:
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+def _when(moment: datetime | None) -> str:
+    return _aware(moment).strftime("%d %b %Y %H:%M UTC") if moment else ""
+
+
+def _notify_key(
+    db: Session, app: ParticipantApp, code: TemplateCode, credential: ParticipantAppCredential, **extra: str
+) -> None:
+    """Tell the app's owner about a key event. Never carries the key or the secret."""
+    owner = db.get(Participant, app.participant_id)
+    if owner is None or not owner.email_id:
+        return
+    try:
+        send_templated(
+            db, code, owner.email_id,
+            {
+                "name": owner.display_name,
+                "app_name": app.name,
+                "key_prefix": credential.api_key_prefix,
+                "expires": _when(credential.expires_date),
+                **extra,
+            },
+        )
+    except Exception as exc:  # a mail problem must not undo the key change
+        logger.warning("Could not send %s for app %s: %s", code, app.app_id, exc)
 
 
 def revoke_credential(db: Session, principal: ParticipantPrincipal, app_uid: str, credential_uid: str) -> AppOut:
@@ -265,6 +472,7 @@ def revoke_credential(db: Session, principal: ParticipantPrincipal, app_uid: str
         description=f"Revoked key {credential.api_key_prefix}… of app '{app.name}'",
     )
     app_gateway_service.sync_app(db, app)
+    _notify_key(db, app, TemplateCode.APP_KEY_REVOKED, credential)
     return app_out(db, app, reveal_key=True)
 
 
@@ -300,20 +508,23 @@ def get_app_token(db: Session, participant: Participant, app_uid: str) -> dict[s
     The OAuth client-credentials request with the app's newest API key + secret,
     made by the sandbox so the secret stays on the server: the portal shows the
     request (URL, client id, grant), the token, its expiry and claims, and puts
-    the token in the try-it headers.
+    the token in the try-it headers. The app's environment picks the Keycloak:
+    production may have its own (KEYCLOAK_PROD_URL).
     """
     if settings.GATEWAY_PARTNER_AUTH != "oauth":
         raise ValidationError("App tokens are used only when the gateway checks OAuth app tokens.")
     credential = _newest_key(db, participant, app_uid)
     client_id = crypto.decrypt(credential.api_key_encrypted)
-    body = keycloak.request_app_token(client_id, crypto.decrypt(credential.api_secret_encrypted))
+    with keycloak.use_realm(keycloak.realm_for(credential.app.environment)):
+        body = keycloak.request_app_token(client_id, crypto.decrypt(credential.api_secret_encrypted))
+        token = body["access_token"]
+        claims = keycloak_oidc.app_token_claims(token)
+        shown_token_url = keycloak.token_url(public=True)
     credential.last_used_date = datetime.now(UTC)
     db.commit()
-    token = body["access_token"]
-    claims = keycloak.unverified_claims(token)
     expires_in = int(body.get("expires_in") or 0)
     return {
-        "token_url": keycloak.token_url(public=True),
+        "token_url": shown_token_url,
         "grant_type": "client_credentials",
         "client_id": client_id,
         "header": settings.GATEWAY_PARTNER_TOKEN_HEADER,
@@ -331,6 +542,22 @@ def get_app_token(db: Session, participant: Participant, app_uid: str) -> dict[s
 def owned_app_id(db: Session, participant: Participant, app_uid: str) -> int:
     """Numeric id of one of the participant's apps (API history keeps it)."""
     return _owned(db, participant, app_uid).app_id
+
+
+def app_environment(db: Session, participant: Participant, app_uid: str) -> str:
+    """The environment one of the participant's apps belongs to (UAT / PRODUCTION)."""
+    return str(_owned(db, participant, app_uid).environment)
+
+
+def assert_app_environment(db: Session, participant: Participant, app_uid: str, environment: Environment) -> None:
+    """A UAT app's keys work only on UAT, a production app's only on production."""
+    app = _owned(db, participant, app_uid)
+    if str(app.environment) != str(environment):
+        kind = "production" if str(app.environment) == str(Environment.PRODUCTION) else "UAT"
+        raise ValidationError(
+            f"App '{app.name}' is a {kind} app; choose one of your {str(environment).lower()} apps "
+            f"to call {environment}."
+        )
 
 
 def app_key(db: Session, participant: Participant, app_uid: str) -> str:
@@ -356,6 +583,7 @@ def admin_list(db: Session, query: AdminAppListQuery, admin: AdminPrincipal) -> 
         api_product_id=query.api_product_id or filters.get("api_product_id"),
         pending_only=query.pending_only or bool(filters.get("pending_only")),
         country_code=admin_country_scope(),
+        environment=query.environment or filters.get("environment") or None,
     )
     page = repo.paginate(query.page, query.limit, query.search, query.sort_by, query.sort_dir, stmt=stmt)
     page.rows = _admin_rows(db, page.rows)
@@ -524,6 +752,14 @@ def resync(db: Session, admin: AdminPrincipal, app_id: int) -> AdminAppOut:
 
 
 # ========================================================= serialisation
+def _calls_since(db: Session, app: ParticipantApp, window: timedelta) -> int:
+    """Calls the gateway logged for this app in the last ``window`` (what its limits count)."""
+    stmt = select(func.count()).select_from(ApiLog).where(
+        ApiLog.app_id == app.app_id, ApiLog.log_timestamp >= datetime.now(UTC) - window
+    )
+    return int(db.execute(stmt).scalar() or 0)
+
+
 def app_out(db: Session, app: ParticipantApp, reveal_key: bool) -> AppOut:
     return AppOut(**_app_fields(db, app, reveal_key))
 
@@ -543,7 +779,6 @@ def _app_fields(db: Session, app: ParticipantApp, reveal_key: bool) -> dict[str,
         "app_id": str(app.unique_id),
         "name": app.name,
         "description": app.description,
-        "callback_url": app.callback_url,
         "environment": app.environment,
         "status": app.status,
         "status_label": APP_STATUS_LABELS.get(app.status, str(app.status)),
@@ -551,6 +786,8 @@ def _app_fields(db: Session, app: ParticipantApp, reveal_key: bool) -> dict[str,
         "allowed_ips": list(app.allowed_ips or []),
         "rate_limit_per_minute": per_minute,
         "quota_per_day": per_day,
+        "calls_last_minute": _calls_since(db, app, timedelta(minutes=1)) if per_minute else None,
+        "calls_today": _calls_since(db, app, timedelta(days=1)) if per_day else None,
         "gateway_consumer": app.gateway_consumer,
         "gateway_status": app.gateway_status,
         # The raw error quotes the gateway's Admin API; only administrators see it.
@@ -587,14 +824,17 @@ def _app_fields(db: Session, app: ParticipantApp, reveal_key: bool) -> dict[str,
     }
 
 
-def _credential_out(credential: ParticipantAppCredential, reveal_key: bool) -> AppCredentialOut:
-    """``reveal_key``: the owner's view, with key and secret of an active credential."""
+def _credential_out(
+    credential: ParticipantAppCredential, reveal_key: bool, reveal_secret: bool = False
+) -> AppCredentialOut:
+    """``reveal_key``: the owner's view, with the key of an active credential. The secret
+    comes out only with ``reveal_secret`` (issue, rotation, first reveal): shown once."""
     active = credential.status == int(CredentialStatus.ACTIVE)
     secret = crypto.decrypt(credential.api_secret_encrypted)
     return AppCredentialOut(
         credential_id=str(credential.unique_id),
         api_key=crypto.decrypt(credential.api_key_encrypted) if reveal_key and active else None,
-        api_secret=secret if reveal_key and active else None,
+        api_secret=secret if reveal_secret and active else None,
         api_key_prefix=credential.api_key_prefix,
         api_secret_hint="••••" + secret[-4:],
         status=credential.status,
@@ -602,11 +842,13 @@ def _credential_out(credential: ParticipantAppCredential, reveal_key: bool) -> A
         issued_date=credential.issued_date,
         revoked_date=credential.revoked_date,
         last_used_date=credential.last_used_date,
+        expires_date=credential.expires_date,
+        secret_viewed=credential.secret_viewed_date is not None,
     )
 
 
 def _issued(credential: ParticipantAppCredential) -> IssuedCredentialOut:
-    return IssuedCredentialOut(**_credential_out(credential, True).model_dump())
+    return IssuedCredentialOut(**_credential_out(credential, True, True).model_dump())
 
 
 def _admin_rows(db: Session, apps: list[ParticipantApp]) -> list[AdminAppOut]:
@@ -661,6 +903,12 @@ def _owned(
             raise ForbiddenError("This app was revoked by an administrator.")
     if active_only and not participant.is_uat_approved:
         raise ForbiddenError("Your account no longer has UAT access.")
+    if (
+        active_only
+        and str(app.environment) == str(Environment.PRODUCTION)
+        and not app_gateway_service.production_access(participant)
+    ):
+        raise ForbiddenError("Your account no longer has production access.")
     return app
 
 
@@ -685,8 +933,11 @@ def _request_product(app: ParticipantApp, product: ApiProduct, actor_id: int) ->
     existing = next((s for s in app.subscriptions if s.api_product_id == product.api_product_id), None)
     if existing is not None and existing.status in (int(SubscriptionStatus.PENDING), int(SubscriptionStatus.APPROVED)):
         return
-    auto = product.approval_type == str(ApprovalType.AUTO) and (
-        existing is None or existing.status != int(SubscriptionStatus.REVOKED)
+    # Production access is always an administrator's decision.
+    auto = (
+        product.approval_type == str(ApprovalType.AUTO)
+        and str(app.environment) != str(Environment.PRODUCTION)
+        and (existing is None or existing.status != int(SubscriptionStatus.REVOKED))
     )
     status = SubscriptionStatus.APPROVED if auto else SubscriptionStatus.PENDING
     if existing is None:
@@ -708,6 +959,11 @@ def _new_credential(app: ParticipantApp, actor_id: int) -> ParticipantAppCredent
         api_key_hash=crypto.sha256_hex(api_key),
         api_key_prefix=api_key[: crypto.KEY_PREFIX_LENGTH],
         status=int(CredentialStatus.ACTIVE),
+        expires_date=(
+            datetime.now(UTC) + timedelta(days=settings.APP_KEY_LIFETIME_DAYS)
+            if settings.APP_KEY_LIFETIME_DAYS > 0
+            else None
+        ),
         added_by=actor_id,
         modify_by=actor_id,
     )

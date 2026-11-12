@@ -26,7 +26,8 @@ function contentSecurityPolicy(): string {
     "img-src": ["'self'", "data:", "blob:", api],
     "font-src": ["'self'", "data:"],
     "connect-src": ["'self'", api, ...(isDev ? ["ws:", "wss:"] : [])],
-    "frame-src": ["'self'"],
+    // blob: = documents the console previews in a dialog (PDF viewer); see DocumentPreview.
+    "frame-src": ["'self'", "blob:"],
     "frame-ancestors": ["'none'"],
     "object-src": ["'none'"],
     "base-uri": ["'self'"],

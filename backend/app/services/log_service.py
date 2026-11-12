@@ -131,6 +131,21 @@ def export_user_action_logs(
     return exporters.export(rows, exporters.USER_ACTION_COLUMNS, fmt, "User Tracking")
 
 
+def purge_old_audit_logs(db: Session, days: int | None = None) -> int:
+    """Delete audit entries older than ``days`` (AUDIT_LOG_RETENTION_DAYS; 0 = keep forever)."""
+    from sqlalchemy import delete
+
+    from app.config.settings import settings
+
+    days = settings.AUDIT_LOG_RETENTION_DAYS if days is None else days
+    if days <= 0:
+        return 0
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+    result = db.execute(delete(UserActionLog).where(UserActionLog.timestamp < cutoff))
+    db.commit()
+    return int(result.rowcount or 0)
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 

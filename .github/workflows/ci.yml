@@ -26,10 +26,12 @@ jobs:
       - run: pip install -r requirements.txt
       - run: ruff check app tests
       # Tests use an in-memory SQLite database (tests/conftest.py); no Postgres needed.
-      - run: pytest
+      # coverage.xml is the report Sonar reads (sonar-project.properties).
+      - run: pip install pytest-cov==7.0.0
+      - run: pytest --cov=app --cov-report=xml:coverage.xml
 
   ui:
-    name: UI (typecheck + lint + build)
+    name: UI (typecheck + lint + tests + build)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -44,6 +46,7 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm run typecheck
       - run: npm run lint
+      - run: npm run test:coverage
       - run: npm run build
         env:
           NEXT_TELEMETRY_DISABLED: "1"

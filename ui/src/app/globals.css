@@ -121,14 +121,15 @@
   accent-color: var(--color-brand-bright);
 }
 
-@utility scrollbar-none {
-  scrollbar-width: none;
-  &::-webkit-scrollbar {
+@layer utilities {
+  .scrollbar-none {
+    scrollbar-width: none;
+  }
+
+  .scrollbar-none::-webkit-scrollbar {
     display: none;
   }
-}
 
-@layer utilities {
   .scrollbar-thin {
     scrollbar-width: thin;
   }

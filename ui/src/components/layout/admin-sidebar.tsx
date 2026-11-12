@@ -354,6 +354,7 @@ function RailFlyout({ item, active, isChildActive, onNavigate }: GroupProps) {
       {position ? (
         <div
           role="menu"
+          tabIndex={-1}
           style={{ top: position.top, left: position.left }}
           className="fixed z-[1150] min-w-[220px] overflow-hidden rounded-xl border border-[#d5e5d5] bg-white shadow-[0_10px_30px_rgba(20,40,25,0.18)]"
           onMouseEnter={open}

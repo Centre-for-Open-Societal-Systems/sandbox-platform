@@ -126,6 +126,13 @@ class Settings(BaseSettings):
     #: (Kong-Admin-Token); empty for an Admin API without authentication.
     GATEWAY_ADMIN_TOKEN: str = ""
     GATEWAY_ADMIN_TIMEOUT: int = 15
+    #: The production gateway's Admin API, when production runs its own APISIX.
+    #: Production apps' routes (oauth: their tokens' oan_routes; apikey /
+    #: keycloak: their consumers) are then read from / written to it, and
+    #: "Pull from gateway" can read it. Empty = production uses the gateway
+    #: above, as before.
+    GATEWAY_PROD_ADMIN_URL: str = ""
+    GATEWAY_PROD_ADMIN_TOKEN: str = ""
 
     # ------------------------------------------------- apps and credentials
     # Participants create apps, each with an API key + secret and a set of
@@ -158,6 +165,24 @@ class Settings(BaseSettings):
     MAX_APPS_PER_PARTICIPANT: int = 10
     #: Active credentials per app - two allows rotating without downtime.
     MAX_ACTIVE_CREDENTIALS_PER_APP: int = 2
+    #: Days an API key lives from issue; 0 = keys do not expire.
+    APP_KEY_LIFETIME_DAYS: int = 0
+    #: Days a key stays valid after it is rotated, so the partner can switch over (0 = revoked at once).
+    APP_KEY_ROTATION_GRACE_DAYS: int = 7
+    #: Email the owner this many days before a key expires.
+    APP_KEY_EXPIRY_WARN_DAYS: int = 14
+    #: How often the API expires old keys and sends the warnings; 0 = never.
+    APP_KEY_MAINTENANCE_MINUTES: int = 60
+    #: Hours an administrator has to answer a support query before it shows as overdue; 0 = no SLA.
+    SUPPORT_SLA_HOURS: int = 72
+    #: Support mailbox told when a participant writes on a ticket (empty = nobody; the console shows it).
+    SUPPORT_NOTIFY_EMAIL: str = ""
+    #: Days an answered ticket waits for the participant before it closes by itself; 0 = never.
+    SUPPORT_AUTO_CLOSE_DAYS: int = 0
+    #: Messages one ticket can hold (a runaway thread should become a new ticket).
+    SUPPORT_MAX_MESSAGES_PER_TICKET: int = 100
+    #: Audit entries (console "User tracking") older than this many days are deleted; 0 = keep forever.
+    AUDIT_LOG_RETENTION_DAYS: int = 0
     #: Addresses (IP or CIDR) a participant may list for an app's IP whitelist.
     MAX_ALLOWED_IPS_PER_APP: int = 20
 
@@ -197,9 +222,25 @@ class Settings(BaseSettings):
     KEYCLOAK_ENVIRONMENTS: str = "UAT,PRODUCTION"
     #: Shared client participants get tokens from; holds the environment roles.
     KEYCLOAK_PARTNER_CLIENT_ID: str = "oan-partner-api"
+    # Production's own Keycloak (GATEWAY_PARTNER_AUTH=oauth): the clients of
+    # production apps ("Move to production"; their own keys, tokens naming only
+    # "production") are written there, and their "Get token" asks it. Set it up
+    # with scripts/keycloak/setup_partner_realm.py against that Keycloak. Empty
+    # KEYCLOAK_PROD_URL = production apps use the Keycloak above.
+    # Participant users and the portal sign-in always stay on the Keycloak above.
+    KEYCLOAK_PROD_URL: str = ""
+    #: As participants reach it (token URL shown to them); empty = KEYCLOAK_PROD_URL.
+    KEYCLOAK_PROD_PUBLIC_URL: str = ""
+    #: Empty = KEYCLOAK_REALM.
+    KEYCLOAK_PROD_REALM: str = ""
+    #: Empty = KEYCLOAK_ADMIN_CLIENT_ID.
+    KEYCLOAK_PROD_ADMIN_CLIENT_ID: str = ""
+    KEYCLOAK_PROD_ADMIN_CLIENT_SECRET: str = ""
+    #: Empty = {KEYCLOAK_PROD_URL}/realms/{realm}/protocol/openid-connect/certs.
+    KEYCLOAK_PROD_JWKS_URL: str = ""
 
     @property
-    def keycloak_environments(self) -> set[str]:
+    def keycloak_environment_set(self) -> set[str]:
         return {e.strip().upper() for e in self.KEYCLOAK_ENVIRONMENTS.split(",") if e.strip()}
 
     # ------------------------------------- participant sign-in (Keycloak)
@@ -233,12 +274,12 @@ class Settings(BaseSettings):
         return self.PARTICIPANT_AUTH_PROVIDER == "keycloak"
 
     @property
-    def keycloak_issuer(self) -> str:
+    def keycloak_token_issuer(self) -> str:
         base = (self.KEYCLOAK_PUBLIC_URL or self.KEYCLOAK_URL).rstrip("/")
         return (self.KEYCLOAK_ISSUER or f"{base}/realms/{self.KEYCLOAK_REALM}").rstrip("/")
 
     @property
-    def keycloak_jwks_url(self) -> str:
+    def keycloak_certs_url(self) -> str:
         return self.KEYCLOAK_JWKS_URL or (
             f"{self.KEYCLOAK_URL.rstrip('/')}/realms/{self.KEYCLOAK_REALM}/protocol/openid-connect/certs"
         )
@@ -266,6 +307,11 @@ class Settings(BaseSettings):
             raise ValueError(
                 "GATEWAY_PARTNER_AUTH=keycloak needs PARTICIPANT_AUTH_PROVIDER=keycloak: try-it sends "
                 "the participant's Keycloak access token to the gateway."
+            )
+        if self.KEYCLOAK_PROD_URL and not self.KEYCLOAK_PROD_ADMIN_CLIENT_SECRET:
+            raise ValueError(
+                "KEYCLOAK_PROD_URL needs KEYCLOAK_PROD_ADMIN_CLIENT_SECRET: the sandbox writes production "
+                "app clients there with its own service account."
             )
         return self
 
@@ -320,7 +366,7 @@ class Settings(BaseSettings):
         return v or "[]"
 
     @property
-    def pm_default_policies(self) -> list[dict]:
+    def pm_default_policy_list(self) -> list[dict]:
         return json.loads(self.PM_DEFAULT_POLICIES)
 
     # --------------------------------------------- rate limits per product
@@ -418,7 +464,7 @@ class Settings(BaseSettings):
         return [p.strip() for p in self.TRUSTED_PROXIES.split(",") if p.strip()]
 
     @property
-    def portal_url(self) -> str:
+    def portal_base_url(self) -> str:
         url = self.PORTAL_URL or (self.allowed_origins_list[0] if self.allowed_origins_list else "")
         return url.rstrip("/")
 

@@ -30,6 +30,12 @@ export function AppStatusBadge({ status, label }: { status: number; label: strin
   return <Badge variant={APP_STATUS_VARIANTS[status] ?? "danger"}>{label}</Badge>;
 }
 
+/** Which environment an app (and its keys) belongs to. */
+export function EnvironmentBadge({ environment }: { environment: string }) {
+  const production = environment === "PRODUCTION";
+  return <Badge variant={production ? "warning" : "info"}>{production ? "Production" : "UAT"}</Badge>;
+}
+
 const GATEWAY_STATES: Record<GatewaySyncStatus, { label: string; variant: "success" | "warning" | "danger" | "neutral" }> = {
   SYNCED: { label: "On gateway", variant: "success" },
   PENDING: { label: "Sync pending", variant: "warning" },

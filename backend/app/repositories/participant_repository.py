@@ -13,6 +13,7 @@ from app.models.enums import ApprovalStatus, Environment
 from app.models.participant import (
     Participant,
     ParticipantQuery,
+    ParticipantQueryMessage,
     ParticipantRequestInfo,
     ParticipantToken,
 )
@@ -302,3 +303,47 @@ class ParticipantQueryRepository(BaseRepository[ParticipantQuery]):
                 ParticipantQuery.participant_id.in_(matching_participants),
             )
         )
+
+
+class ParticipantQueryMessageRepository(BaseRepository[ParticipantQueryMessage]):
+    """The messages of support tickets (oldest first)."""
+
+    model = ParticipantQueryMessage
+    pk_name = "message_id"
+    default_sort = "added_date"
+
+    def thread(self, query_id: int, include_internal: bool) -> list[ParticipantQueryMessage]:
+        stmt = select(ParticipantQueryMessage).where(ParticipantQueryMessage.query_id == query_id)
+        if not include_internal:
+            stmt = stmt.where(ParticipantQueryMessage.is_internal.is_(False))
+        stmt = stmt.order_by(ParticipantQueryMessage.added_date, ParticipantQueryMessage.message_id)
+        return list(self.db.execute(stmt).scalars().all())
+
+    def counts(self, query_ids: list[int], include_internal: bool) -> dict[int, int]:
+        """Real messages per ticket (status events excluded)."""
+        if not query_ids:
+            return {}
+        stmt = (
+            select(ParticipantQueryMessage.query_id, func.count())
+            .where(
+                ParticipantQueryMessage.query_id.in_(query_ids),
+                ParticipantQueryMessage.author_type != "system",
+            )
+            .group_by(ParticipantQueryMessage.query_id)
+        )
+        if not include_internal:
+            stmt = stmt.where(ParticipantQueryMessage.is_internal.is_(False))
+        return {qid: int(n) for qid, n in self.db.execute(stmt).all()}
+
+    def count_for(self, query_id: int) -> int:
+        return self.counts([query_id], include_internal=True).get(query_id, 0)
+
+    def last_external_id(self, query_id: int) -> str | None:
+        """Message-ID of the newest mail of the ticket (for In-Reply-To / References)."""
+        stmt = (
+            select(ParticipantQueryMessage.external_id)
+            .where(ParticipantQueryMessage.query_id == query_id, ParticipantQueryMessage.external_id.is_not(None))
+            .order_by(ParticipantQueryMessage.message_id.desc())
+            .limit(1)
+        )
+        return self.db.execute(stmt).scalar_one_or_none()

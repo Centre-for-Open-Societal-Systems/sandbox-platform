@@ -63,6 +63,7 @@ export function SearchableMultiSelect({
   const rootRef = React.useRef<HTMLDivElement>(null);
   const listRef = React.useRef<HTMLUListElement>(null);
   const sentinelRef = React.useRef<HTMLLIElement>(null);
+  const searchRef = React.useRef<HTMLInputElement>(null);
   const listboxId = `${id ?? "lookup"}-listbox`;
 
   React.useEffect(() => {
@@ -83,6 +84,11 @@ export function SearchableMultiSelect({
   });
   const items = React.useMemo(() => options.data?.pages.flatMap((page) => page.rows) ?? [], [options.data]);
   const selectedIds = React.useMemo(() => new Set(value.map((item) => item.id)), [value]);
+
+  // Put the cursor in the search box when the list opens.
+  React.useEffect(() => {
+    if (open) searchRef.current?.focus();
+  }, [open]);
 
   // Close on a click outside.
   React.useEffect(() => {
@@ -135,10 +141,11 @@ export function SearchableMultiSelect({
     value.length === 0 ? placeholder : value.length === 1 ? value[0]!.label : `${value.length} ${noun} selected`;
 
   return (
-    <div ref={rootRef} className={cn("relative w-full", className)} onKeyDown={onKeyDown}>
+    <div ref={rootRef} className={cn("relative w-full", className)}>
       <button
         id={id}
         type="button"
+        onKeyDown={onKeyDown}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={listboxId}
@@ -166,6 +173,7 @@ export function SearchableMultiSelect({
           type="button"
           aria-label={`Clear selected ${noun}`}
           onClick={() => onChange([])}
+          onKeyDown={onKeyDown}
           className="absolute top-5 right-8 -translate-y-1/2 rounded p-0.5 text-subtle hover:bg-slate-100 hover:text-ink"
         >
           <X className="h-4 w-4" aria-hidden />
@@ -177,8 +185,9 @@ export function SearchableMultiSelect({
           <div className="relative border-b border-hairline p-2">
             <Search className="pointer-events-none absolute top-1/2 left-4.5 h-4 w-4 -translate-y-1/2 text-subtle" aria-hidden />
             <input
-              autoFocus
+              ref={searchRef}
               type="search"
+              onKeyDown={onKeyDown}
               value={searchInput}
               onChange={(event) => setSearchInput(event.target.value)}
               placeholder={searchPlaceholder}
@@ -200,6 +209,7 @@ export function SearchableMultiSelect({
                     type="button"
                     aria-label={`Remove ${item.label}`}
                     onClick={() => toggle(item)}
+                    onKeyDown={onKeyDown}
                     className="rounded-full p-0.5 hover:bg-brand-200"
                   >
                     <X className="h-3 w-3" aria-hidden />

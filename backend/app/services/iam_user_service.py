@@ -70,7 +70,7 @@ def roles_for(participant: Participant) -> set[str]:
     return {
         str(env).lower()
         for env in Environment
-        if str(env) in settings.keycloak_environments and is_approved(participant, env)
+        if str(env) in settings.keycloak_environment_set and is_approved(participant, env)
     }
 
 

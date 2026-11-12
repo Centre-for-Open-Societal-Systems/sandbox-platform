@@ -31,6 +31,11 @@ class CountryRules:
     tin_re: re.Pattern | None
     #: Human-readable hints surfaced in validation messages.
     labels: dict[str, str] = field(default_factory=dict)
+    #: The accepted format in words, per field ("registration", "tin", "postal").
+    formats: dict[str, str] = field(default_factory=dict)
+    #: A valid value per field ("registration", "tin", "postal", "mobile": national
+    #: number), quoted in validation messages; tests check each one passes.
+    examples: dict[str, str] = field(default_factory=dict)
 
 
 COUNTRY_RULES: dict[str, CountryRules] = {
@@ -41,6 +46,8 @@ COUNTRY_RULES: dict[str, CountryRules] = {
         registration_re=re.compile(r"^[A-Z0-9/\-]{6,20}$"),
         tin_re=re.compile(r"^\d{10}$"),
         labels={"tin": "TIN", "registration": "Trade licence number"},
+        formats={"registration": "6-20 letters, digits, / or -", "tin": "10 digits", "postal": "4 digits"},
+        examples={"registration": "AA/1234/2015", "tin": "0012345678", "postal": "1000", "mobile": "911234567"},
     ),
     "KE": CountryRules(
         dial_code="254",
@@ -49,6 +56,12 @@ COUNTRY_RULES: dict[str, CountryRules] = {
         registration_re=re.compile(r"^[A-Z0-9/\-]{6,20}$"),
         tin_re=re.compile(r"^[A-Z]\d{9}[A-Z]$"),  # KRA PIN
         labels={"tin": "KRA PIN", "registration": "Registration number"},
+        formats={
+            "registration": "6-20 letters, digits, / or -",
+            "tin": "a letter, 9 digits and a letter",
+            "postal": "5 digits",
+        },
+        examples={"registration": "CPR/2015/123456", "tin": "A123456789B", "postal": "00100", "mobile": "712345678"},
     ),
     "RW": CountryRules(
         dial_code="250",
@@ -57,6 +70,8 @@ COUNTRY_RULES: dict[str, CountryRules] = {
         registration_re=re.compile(r"^\d{9}$"),
         tin_re=re.compile(r"^\d{9}$"),
         labels={"tin": "TIN", "registration": "RDB registration number"},
+        formats={"registration": "9 digits", "tin": "9 digits"},
+        examples={"registration": "100123456", "tin": "100123456", "mobile": "781234567"},
     ),
     "GH": CountryRules(
         dial_code="233",
@@ -65,6 +80,8 @@ COUNTRY_RULES: dict[str, CountryRules] = {
         registration_re=re.compile(r"^[A-Z]{2}\d{6,12}$"),
         tin_re=re.compile(r"^[A-Z]\d{10}$"),
         labels={"tin": "TIN", "registration": "Registration number"},
+        formats={"registration": "2 letters and 6-12 digits", "tin": "a letter and 10 digits"},
+        examples={"registration": "CS123456789", "tin": "C0012345678", "mobile": "241234567"},
     ),
     "NG": CountryRules(
         dial_code="234",
@@ -73,6 +90,8 @@ COUNTRY_RULES: dict[str, CountryRules] = {
         registration_re=re.compile(r"^(RC|BN)\d{4,10}$"),
         tin_re=re.compile(r"^\d{8}-\d{4}$"),
         labels={"tin": "TIN", "registration": "CAC number"},
+        formats={"registration": "RC or BN and 4-10 digits", "tin": "8 digits, a hyphen and 4 digits", "postal": "6 digits"},
+        examples={"registration": "RC1234567", "tin": "12345678-0001", "postal": "100001", "mobile": "8031234567"},
     ),
 }
 
@@ -84,7 +103,19 @@ DEFAULT_RULES = CountryRules(
     registration_re=re.compile(r"^[A-Za-z0-9/\-]{4,30}$"),
     tin_re=re.compile(r"^[A-Za-z0-9\-]{5,20}$"),
     labels={"tin": "Tax id", "registration": "Registration number"},
+    formats={"registration": "4-30 letters, digits, / or -", "tin": "5-20 letters, digits or -"},
+    examples={"registration": "REG-12345", "tin": "TIN-12345"},
 )
+
+
+def _format_hint(rules: CountryRules, kind: str) -> str:
+    """" Use <format>, e.g. <example>." for a validation message, or "" when unknown."""
+    fmt, example = rules.formats.get(kind), rules.examples.get(kind)
+    if fmt and example:
+        return f" Use {fmt}, e.g. {example}."
+    if example:
+        return f" For example: {example}."
+    return ""
 
 
 def rules_for(country_code: str | None = None) -> CountryRules:
@@ -149,14 +180,16 @@ def normalise_msisdn(value: str, country_code: str | None = None) -> str:
         else:
             national = digits.lstrip("0")
         if rules.msisdn_length and len(national) != rules.msisdn_length:
+            example = rules.examples.get("mobile")
             raise ValueError(
                 f"Mobile number must be {rules.msisdn_length} digits after the "
-                f"country code (+{rules.dial_code})."
+                f"country code (+{rules.dial_code})"
+                + (f", e.g. +{rules.dial_code}{example} or 0{example}." if example else ".")
             )
         return f"+{rules.dial_code}{national}"
 
     if not 6 <= len(digits) <= 15:
-        raise ValueError("Mobile number is not valid.")
+        raise ValueError("Mobile number is not valid. Use 6-15 digits with the country code, e.g. +12025550123.")
     return f"+{digits}"
 
 
@@ -165,7 +198,7 @@ def validate_registration_number(value: str, country_code: str | None = None) ->
     candidate = (value or "").strip().upper()
     if rules.registration_re and not rules.registration_re.match(candidate):
         label = rules.labels.get("registration", "Registration number")
-        raise ValueError(f"{label} format is not valid.")
+        raise ValueError(f"{label} format is not valid.{_format_hint(rules, 'registration')}")
     return candidate
 
 
@@ -174,7 +207,7 @@ def validate_tin(value: str, country_code: str | None = None) -> str:
     candidate = (value or "").strip().upper()
     if rules.tin_re and not rules.tin_re.match(candidate):
         label = rules.labels.get("tin", "Tax id")
-        raise ValueError(f"{label} format is not valid.")
+        raise ValueError(f"{label} format is not valid.{_format_hint(rules, 'tin')}")
     return candidate
 
 
@@ -182,5 +215,5 @@ def validate_postal_code(value: str, country_code: str | None = None) -> str:
     rules = rules_for(country_code)
     candidate = (value or "").strip()
     if rules.postal_code_re and not rules.postal_code_re.match(candidate):
-        raise ValueError("Postal code format is not valid.")
+        raise ValueError(f"Postal code format is not valid.{_format_hint(rules, 'postal')}")
     return candidate

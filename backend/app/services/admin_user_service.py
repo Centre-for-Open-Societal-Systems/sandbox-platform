@@ -517,6 +517,6 @@ def _send_invite(db: Session, user: AdmUser, token: str) -> AdminInviteOut:
         {"name": user.full_name or user.login_name, "token": token},
     )
     return AdminInviteOut(
-        invite_url=f"{settings.portal_url}/admin/set-password?token={token}",
+        invite_url=f"{settings.portal_base_url}/admin/set-password?token={token}",
         emailed=bool(emailed),
     )

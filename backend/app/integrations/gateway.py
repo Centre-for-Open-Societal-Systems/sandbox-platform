@@ -6,11 +6,19 @@ Two gateways are supported, picked with ``GATEWAY_TYPE``: Apache APISIX
 :class:`GatewayService` / :class:`GatewayRoute` records, with paths written
 the OpenAPI way (``/v1/leads/{id}``), so the catalogue sync does not depend
 on the gateway product.
+
+Production may run its own gateway (``GATEWAY_PROD_ADMIN_URL``): every Admin
+API call made in a ``with use_target(target_for("PRODUCTION"))`` block goes
+there. Outside such a block, and whenever that setting is empty, calls go to
+``GATEWAY_ADMIN_URL`` as before.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -64,20 +72,78 @@ class GatewaySnapshot:
     routes: list[GatewayRoute]
 
 
+PRODUCTION = "PRODUCTION"
+
+
+@dataclass(frozen=True, slots=True)
+class AdminTarget:
+    """One gateway's Admin API."""
+
+    #: "UAT" for GATEWAY_ADMIN_URL, "PRODUCTION" for production's own gateway.
+    environment: str
+    url: str
+    token: str
+    #: The settings named in error messages.
+    url_setting: str
+    token_setting: str
+
+
+def main_target() -> AdminTarget:
+    return AdminTarget("UAT", settings.GATEWAY_ADMIN_URL, settings.GATEWAY_ADMIN_TOKEN,
+                       "GATEWAY_ADMIN_URL", "GATEWAY_ADMIN_TOKEN")
+
+
+def production_target() -> AdminTarget | None:
+    """Production's own gateway, or None when production uses GATEWAY_ADMIN_URL."""
+    if not settings.GATEWAY_PROD_ADMIN_URL:
+        return None
+    return AdminTarget(PRODUCTION, settings.GATEWAY_PROD_ADMIN_URL, settings.GATEWAY_PROD_ADMIN_TOKEN,
+                       "GATEWAY_PROD_ADMIN_URL", "GATEWAY_PROD_ADMIN_TOKEN")
+
+
+def separate_production() -> bool:
+    return production_target() is not None
+
+
+def target_for(environment: str) -> AdminTarget:
+    """The Admin API holding ``environment``'s routes."""
+    if str(environment).upper() == PRODUCTION:
+        return production_target() or main_target()
+    return main_target()
+
+
+_active: ContextVar[AdminTarget | None] = ContextVar("gateway_admin_target", default=None)
+
+
+@contextmanager
+def use_target(target: AdminTarget) -> Iterator[AdminTarget]:
+    """Send the Admin API calls made inside the block to ``target``."""
+    token = _active.set(target)
+    try:
+        yield target
+    finally:
+        _active.reset(token)
+
+
+def current_target() -> AdminTarget:
+    return _active.get() or main_target()
+
+
 def is_configured() -> bool:
     return bool(settings.GATEWAY_SYNC_ENABLED and settings.GATEWAY_ADMIN_URL)
 
 
 def fetch() -> GatewaySnapshot:
-    """Read the configured gateway. Raises when sync is off or the gateway fails."""
+    """Read the current gateway. Raises when sync is off or the gateway fails."""
+    target = current_target()
     if not settings.GATEWAY_SYNC_ENABLED:
         raise ValidationError("Pulling from the API gateway is disabled (GATEWAY_SYNC_ENABLED).")
-    if not settings.GATEWAY_ADMIN_URL:
-        raise ValidationError("GATEWAY_ADMIN_URL is not set.")
+    if not target.url:
+        raise ValidationError(f"{target.url_setting} is not set.")
     reader = _read_apisix if settings.GATEWAY_TYPE == "apisix" else _read_kong
     try:
         with httpx.Client(
-            base_url=settings.GATEWAY_ADMIN_URL.rstrip("/"),
+            base_url=target.url.rstrip("/"),
             timeout=settings.GATEWAY_ADMIN_TIMEOUT,
             headers=_admin_headers(),
         ) as client:
@@ -86,17 +152,17 @@ def fetch() -> GatewaySnapshot:
         logger.warning("Gateway Admin API answered %s: %s", exc.response.status_code, exc)
         raise UpstreamError(
             f"The {settings.GATEWAY_TYPE} Admin API answered HTTP {exc.response.status_code}."
-            " Check GATEWAY_ADMIN_URL and GATEWAY_ADMIN_TOKEN."
+            f" Check {target.url_setting} and {target.token_setting}."
         ) from exc
     except httpx.HTTPError as exc:
         logger.warning("Gateway Admin API unreachable: %s", exc)
         raise UpstreamError(
-            f"The {settings.GATEWAY_TYPE} Admin API could not be reached at GATEWAY_ADMIN_URL."
+            f"The {settings.GATEWAY_TYPE} Admin API could not be reached at {target.url_setting}."
         ) from exc
 
 
 def _admin_headers() -> dict[str, str]:
-    token = settings.GATEWAY_ADMIN_TOKEN
+    token = current_target().token
     if not token:
         return {}
     return {"X-API-KEY": token} if settings.GATEWAY_TYPE == "apisix" else {"Kong-Admin-Token": token}
@@ -286,7 +352,7 @@ def _admin_client() -> httpx.Client:
             "App provisioning needs GATEWAY_APP_SYNC_ENABLED, GATEWAY_ADMIN_URL and GATEWAY_TYPE=apisix."
         )
     return httpx.Client(
-        base_url=settings.GATEWAY_ADMIN_URL.rstrip("/"),
+        base_url=current_target().url.rstrip("/"),
         timeout=settings.GATEWAY_ADMIN_TIMEOUT,
         headers=_admin_headers(),
     )
@@ -308,7 +374,9 @@ def _call(method: str, path: str, json: dict[str, Any] | None = None, missing_ok
         ) from exc
     except httpx.HTTPError as exc:
         logger.warning("APISIX Admin API unreachable: %s", exc)
-        raise UpstreamError("The APISIX Admin API could not be reached at GATEWAY_ADMIN_URL.") from exc
+        raise UpstreamError(
+            f"The APISIX Admin API could not be reached at {current_target().url_setting}."
+        ) from exc
 
 
 def list_routes() -> list[GatewayRoute]:
@@ -318,7 +386,9 @@ def list_routes() -> list[GatewayRoute]:
             return _read_apisix(client).routes
     except httpx.HTTPError as exc:
         logger.warning("APISIX Admin API unreachable: %s", exc)
-        raise UpstreamError("The APISIX Admin API could not be reached at GATEWAY_ADMIN_URL.") from exc
+        raise UpstreamError(
+            f"The APISIX Admin API could not be reached at {current_target().url_setting}."
+        ) from exc
 
 
 def put_consumer(

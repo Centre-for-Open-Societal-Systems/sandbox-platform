@@ -106,7 +106,7 @@ function FaqsTab() {
   });
 
   function invalidate() {
-    queryClient.invalidateQueries({ queryKey: ["admin", "faqs"] });
+    void queryClient.invalidateQueries({ queryKey: ["admin", "faqs"] });
   }
 
   const save = useMutation({
@@ -311,7 +311,7 @@ function TermsTab() {
     mutationFn: (section: TermSection) => contentApi.deleteTerm(section.table_id),
     onSuccess: () => {
       notify("Section deleted.", "success");
-      queryClient.invalidateQueries({ queryKey: ["admin", "terms"] });
+      void queryClient.invalidateQueries({ queryKey: ["admin", "terms"] });
     },
     onError: (error: Error) => notify(error.message, "error"),
   });
@@ -335,7 +335,7 @@ function TermsTab() {
     onSuccess: () => {
       notify("Section saved.", "success");
       setForm(null);
-      queryClient.invalidateQueries({ queryKey: ["admin", "terms"] });
+      void queryClient.invalidateQueries({ queryKey: ["admin", "terms"] });
     },
     onError: (error: Error) => notify(error.message, "error"),
   });
@@ -531,7 +531,7 @@ function TemplatesTab() {
     onSuccess: () => {
       notify("Email template saved.", "success");
       setForm(null);
-      queryClient.invalidateQueries({ queryKey: ["admin", "email-templates"] });
+      void queryClient.invalidateQueries({ queryKey: ["admin", "email-templates"] });
     },
     onError: (error: Error) => notify(error.message, "error"),
   });

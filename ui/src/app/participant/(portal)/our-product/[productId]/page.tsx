@@ -7,7 +7,9 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ArrowRight, Boxes, LayoutGrid, List, Loader2, Search } from "lucide-react";
 
 import { ApiBanner } from "@/components/portal/console-ui";
+import { ProductExportButtons } from "@/components/portal/product-export-buttons";
 import { MethodBadge } from "@/components/ui/status-badge";
+import { usePortalEnvironment } from "@/hooks/use-portal-environment";
 import { catalogApi } from "@/lib/services/catalog";
 import { cn } from "@/lib/utils";
 
@@ -25,6 +27,7 @@ export default function OurProductPage() {
   const [search, setSearch] = React.useState("");
   const [types, setTypes] = React.useState<string[]>([ALL]);
   const [grid, setGrid] = React.useState(true);
+  const [environment] = usePortalEnvironment();
 
   const productQuery = useQuery({
     queryKey: ["participant", "catalog", "product", productId],
@@ -34,7 +37,7 @@ export default function OurProductPage() {
 
   const product = productQuery.data;
   const endpoints = product?.endpoints ?? [];
-  const apiTypes = Array.from(new Set(endpoints.map((endpoint) => endpoint.api_type || "General"))).sort();
+  const apiTypes = Array.from(new Set(endpoints.map((endpoint) => endpoint.api_type || "General"))).sort((a, b) => a.localeCompare(b));
 
   const needle = search.trim().toLowerCase();
   const visible = endpoints.filter(
@@ -96,6 +99,14 @@ export default function OurProductPage() {
         {product.description ? (
           <p className="mt-3 max-w-3xl text-sm leading-relaxed text-white/85">{product.description}</p>
         ) : null}
+        <div className="mt-4">
+          <ProductExportButtons
+            productId={product.product_id}
+            productName={product.display_name ?? product.product_name}
+            audience="participant"
+            environment={environment}
+          />
+        </div>
         <div className="relative mt-6 w-full max-w-xl">
           <Search
             className="pointer-events-none absolute top-1/2 left-4 h-4 w-4 -translate-y-1/2 text-slate-400"

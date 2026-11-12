@@ -32,6 +32,7 @@ from app.repositories.master_repository import (
     ProductCategoryRepository,
 )
 from app.repositories.participant_repository import (
+    ParticipantQueryMessageRepository,
     ParticipantQueryRepository,
     ParticipantRepository,
     ParticipantRequestRepository,
@@ -47,6 +48,7 @@ __all__ = [
     "ParticipantRepository",
     "ParticipantTokenRepository",
     "ParticipantRequestRepository",
+    "ParticipantQueryMessageRepository",
     "ParticipantQueryRepository",
     "ProductRepository",
     "EndpointRepository",

@@ -23,6 +23,7 @@ venv/
 .ruff_cache/
 .coverage
 .coverage.*
+coverage.xml
 htmlcov/
 *.db
 *.sqlite3
@@ -32,6 +33,7 @@ backend/uploads/
 node_modules/
 ui/.next/
 ui/out/
+ui/coverage/
 *.tsbuildinfo
 ui/next-env.d.ts
 npm-debug.log*

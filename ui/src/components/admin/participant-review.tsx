@@ -4,10 +4,10 @@ import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { FileText, Loader2 } from "lucide-react";
 
+import { DocumentPreview } from "@/components/admin/document-preview";
+import { PartnerKeySummary } from "@/components/admin/partner-key-summary";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { useToast } from "@/components/ui/toast";
-import { showBlobInTab } from "@/lib/api-client";
 import { adminApi } from "@/lib/services/admin";
 import { catalogApi } from "@/lib/services/catalog";
 import { formatDateTime, formatNumber } from "@/lib/utils";
@@ -25,29 +25,25 @@ function fileName(path: string) {
   return path.split("/").pop()?.replace(/^[0-9a-f]{32}_/, "") ?? path;
 }
 
-/** Opens a private upload in a new tab using the admin session. */
+/** Shows a private upload in a preview dialog, loaded with the admin session. */
 function DocumentButton({ path, label }: { path: string; label: string }) {
-  const { notify } = useToast();
-  const [opening, setOpening] = React.useState(false);
-
-  async function open() {
-    const tab = window.open("", "_blank");
-    setOpening(true);
-    try {
-      showBlobInTab(await adminApi.participantFile(path), tab);
-    } catch (error) {
-      tab?.close();
-      notify(error instanceof Error ? error.message : "The document could not be opened.", "error");
-    } finally {
-      setOpening(false);
-    }
-  }
-
+  const [open, setOpen] = React.useState(false);
   return (
-    <Button type="button" size="sm" variant="outline" onClick={open} loading={opening} title={fileName(path)}>
-      <FileText className="h-4 w-4" aria-hidden />
-      {label}
-    </Button>
+    <>
+      <Button type="button" size="sm" variant="outline" onClick={() => setOpen(true)} title={fileName(path)}>
+        <FileText className="h-4 w-4" aria-hidden />
+        {label}
+      </Button>
+      {open ? (
+        <DocumentPreview
+          open
+          onOpenChange={setOpen}
+          title={label}
+          fileName={fileName(path)}
+          load={() => adminApi.participantFile(path)}
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -162,6 +158,8 @@ function RequestCard({ request, endpointNames }: { request: PromotionRequest; en
           </ul>
         </div>
       ) : null}
+
+      {details.key ? <PartnerKeySummary info={details.key} /> : null}
 
       {details.public_key ? (
         <details className="mt-3">

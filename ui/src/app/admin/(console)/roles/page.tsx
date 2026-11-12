@@ -55,7 +55,7 @@ export default function RolesPage() {
   }
 
   function invalidate() {
-    queryClient.invalidateQueries({ queryKey: ["admin", "roles"] });
+    void queryClient.invalidateQueries({ queryKey: ["admin", "roles"] });
   }
 
   const createRole = useMutation({

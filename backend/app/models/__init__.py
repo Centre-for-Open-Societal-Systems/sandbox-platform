@@ -41,6 +41,7 @@ from app.models.masters import (
 from app.models.participant import (
     Participant,
     ParticipantQuery,
+    ParticipantQueryMessage,
     ParticipantRequestInfo,
     ParticipantToken,
 )
@@ -67,6 +68,7 @@ __all__ = [
     "ParticipantToken",
     "ParticipantRequestInfo",
     "ParticipantQuery",
+    "ParticipantQueryMessage",
     # catalog
     "Product",
     "Endpoint",

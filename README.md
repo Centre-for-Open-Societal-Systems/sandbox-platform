@@ -1,8 +1,8 @@
 # Sandbox Platform
 
-Developer sandbox for **Open Agri Net (OAN)**: a public site with the API catalogue, a
-participant portal (sign-up, environment access, try-it console, API history, support) and an
-admin console (participants, products and end-points, CMS, masters, queries). Try-it calls are
+Developer sandbox for **EOAN (Open Agri Net)**: a public site with the API catalogue, a
+participant portal (sign-up, environment access, try-it console, API history, Help & Support) and an
+admin console (participants, products and end-points, Content Management, masters, Support Tickets). Try-it calls are
 answered from published samples (mock mode) or routed through the API gateway (Apache APISIX)
 of the environment.
 
@@ -70,7 +70,7 @@ commit secrets. On Kubernetes use the Helm chart `oan-sandbox` in
 | PostgreSQL | Included in the stack (`postgres:18-alpine`, database `sandbox_db_oan`, volume `oan_pgdata`). For a managed database, remove the `postgres` service and point `DB_HOST` / `DB_PORT` at it (PostgreSQL 18, to match the snapshot). |
 | API gateway (APISIX) | **Not part of this stack.** The environment's existing Apache APISIX must be deployed with the A2C routes and plugins and be reachable from the `api` container. Its proxy URL is `GATEWAY_UAT_URL`; the stack refuses to start without it. Plugins: `jwt-auth` with `key_claim_name: iss` (A2C tokens are RS256, identified by `iss` = `oan_a2c_identity_gateway`; with the default `key` claim every token is `401`), `key-auth` on the `apikey` header, `consumer-restriction` (consumer groups), `ip-restriction`, `limit-count`. Route paths must match the catalogue end-point paths. The sandbox needs no Redis or etcd of its own (only the gateway uses them). |
 | Public host names | One for the web app (e.g. `https://sandbox.<domain>`) and one for the API (e.g. `https://api.<domain>/oan`, or the same host under `/oan`), with TLS on a reverse proxy or load balancer. |
-| SMTP | An SMTP account for sign-up codes, password-reset links, invitations and query replies. Without it, codes and links only appear in the API log; admin invitation links are also shown in the console to copy (see *After deploying*). |
+| SMTP | An SMTP account for sign-up codes, password-reset links, invitations and support ticket replies. Without it, codes and links only appear in the API log; admin invitation links are also shown in the console to copy (see *After deploying*). |
 | Database start mode | **Snapshot** (default): the first start loads `deployment/postgres/initdb` (catalogue, masters, CMS, development accounts). **Clean**: `POSTGRES_INITDB_DIR=./deployment/postgres/empty` + `SEED_ADMIN_PASSWORD` (schema, admin, masters, CMS only). Use clean for production. Either applies only to an **empty** volume. |
 
 ### Volumes
@@ -122,6 +122,7 @@ commit secrets. On Kubernetes use the Helm chart `oan-sandbox` in
 | `GATEWAY_ENABLED` | `true` | `false`: no try-it call reaches the gateway (they fail, or answer from samples with `SANDBOX_MOCK_RESPONSES=true`). |
 | `SANDBOX_MOCK_RESPONSES` | `false` | `true` answers try-it calls for endpoints with no gateway route from their stored samples. Off: everything goes through APISIX. |
 | `GATEWAY_PROD_URL` | empty | Production gateway when it exists. |
+| `GATEWAY_PROD_ADMIN_URL`, `GATEWAY_PROD_ADMIN_TOKEN` | empty | Production's own APISIX Admin API (viewer key in oauth mode). Production apps' route ids are read from it (apikey / keycloak modes: their consumers are written there); "Pull from gateway" gets a UAT / Production choice. Empty = production apps use `GATEWAY_ADMIN_URL`. |
 | `GATEWAY_UAT_PUBLIC_URL`, `GATEWAY_PROD_PUBLIC_URL` | empty (= the URL above) | The gateway as partners reach it from Postman / their code; shown in code samples, the try-it URL and API history. Set it when the API reaches the gateway on an internal address (cluster service, `host.docker.internal`). |
 | `GATEWAY_SYNC_ENABLED` | `false` | `true` shows **Pull from gateway** in the console (API Catalogue): reads every route from the gateway's Admin API and adds or updates catalogue end-points. |
 | `GATEWAY_TYPE` | `apisix` | `apisix` or `kong`: which Admin API to read. |
@@ -132,11 +133,14 @@ commit secrets. On Kubernetes use the Helm chart `oan-sandbox` in
 | `GATEWAY_APP_SYNC_ENABLED` | `false` | `true` writes every participant app to APISIX as a consumer (API key + secret, whitelist of the routes its API products grant). Needs `GATEWAY_TYPE=apisix` and `GATEWAY_ADMIN_URL`. |
 | `APP_CREDENTIAL_ENCRYPTION_KEY` | *(Secret)* | Fernet key encrypting the stored app keys/secrets. **Required in production**; never change it once keys are issued. Generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `GATEWAY_APP_KEY_HEADER`, `MAX_APPS_PER_PARTICIPANT`, `MAX_ACTIVE_CREDENTIALS_PER_APP` | `apikey`, `10`, `2` | Key header the gateway's `key-auth` reads; app and key limits. |
+| `SUPPORT_NOTIFY_EMAIL`, `SUPPORT_AUTO_CLOSE_DAYS`, `SUPPORT_MAX_MESSAGES_PER_TICKET` | empty, `0`, `100` | Support tickets are conversations: mailbox told when a participant writes, days after which an answered ticket without a reply closes (0 = never), and the most messages per ticket. |
+| `SUPPORT_SLA_HOURS`, `AUDIT_LOG_RETENTION_DAYS` | `72`, `0` | Hours before an unanswered support query shows as overdue (0 = no SLA); days after which audit entries are deleted (0 = keep forever). |
+| `APP_KEY_LIFETIME_DAYS`, `APP_KEY_ROTATION_GRACE_DAYS`, `APP_KEY_EXPIRY_WARN_DAYS`, `APP_KEY_MAINTENANCE_MINUTES` | `0`, `7`, `14`, `60` | App key lifecycle: lifetime (0 = never expires), how long a rotated key keeps working, days of warning before expiry, how often the API expires keys and sends warnings (0 = never). |
 | `API_DEBUG` | `false` | `true` exposes Swagger at `/docs`. Keep `false` on shared servers. |
 | `DB_USER`, `DB_NAME` | `postgres`, `sandbox_db_oan` | |
 | `API_HOST_PORT`, `WEB_HOST_PORT` | `8010`, `3005` | Host ports the reverse proxy targets. |
 | `POSTGRES_HOST_PORT`, `POSTGRES_BIND` | `5433`, `127.0.0.1` | Keep the database on loopback. |
-| `DEFAULT_COUNTRY_CODE`, `SITE_NAME` | `ET`, `Open Agri Net` | `SITE_NAME` is build-time for `web`. |
+| `DEFAULT_COUNTRY_CODE`, `SITE_NAME` | `ET`, `EOAN` | `SITE_NAME` is build-time for `web`. |
 | `LOG_LEVEL` | `INFO` | |
 
 **OpenG2P Consent Manager partner portal** (optional). An approved participant also signs in
@@ -147,6 +151,7 @@ Needs Keycloak provisioning (`KEYCLOAK_PROVISIONING_ENABLED=true`, `KEYCLOAK_URL
 
 | Variable | Example | Notes |
 |---|---|---|
+| `KEYCLOAK_PROD_URL`, `KEYCLOAK_PROD_PUBLIC_URL`, `KEYCLOAK_PROD_REALM`, `KEYCLOAK_PROD_ADMIN_CLIENT_ID`, `KEYCLOAK_PROD_ADMIN_CLIENT_SECRET` *(Secret)*, `KEYCLOAK_PROD_JWKS_URL` | empty | Production's own Keycloak (oauth): production apps' clients and their **Get token**. Empty realm / client id = the main ones; `KEYCLOAK_PROD_URL` needs the secret. Empty `KEYCLOAK_PROD_URL` = production apps use the main Keycloak. Participant users and the portal sign-in stay on the main Keycloak. |
 | `KEYCLOAK_REALM` | `partner` | The CM's partner realm (made by the CM chart with `partnerPortal.enabled`), instead of `oan-partners`. |
 | `KEYCLOAK_PORTAL_CLIENT_ID` | `consent-partner-portal` | The CM portal client. Approval gives the user its role `KEYCLOAK_PORTAL_ROLE` (default `PARTNER_OPERATOR`) and the attribute `partner_id` = `PARTNER_ID_PREFIX` + participant id (`oan-p-42`). Empty: portal off. **Never change `PARTNER_ID_PREFIX` once partners exist.** |
 | `PM_PROVISIONING_ENABLED` | `true` | Approval onboards **and approves** the participant as PM partner `PARTNER_OAN_P_42`; reject, disable and delete disable it, a new approval enables it. |
@@ -313,8 +318,26 @@ Checks (the same as CI):
 | Part | Command |
 | --- | --- |
 | Backend lint | `cd backend && ruff check app tests` |
-| Backend tests | `cd backend && pytest` |
+| Backend tests | `cd backend && pytest` (CI: `pytest --cov=app --cov-report=xml:coverage.xml`) |
+| UI unit tests | `cd ui && npm test` (Vitest + Testing Library; `npm run test:coverage` writes `coverage/lcov.info`) |
 | UI | `cd ui && npm run typecheck && npm run lint && npm run build` |
+| SonarQube | both coverage reports, then `sonar-scanner -Dsonar.host.url=<server> -Dsonar.token=<token>` from the repository root (`sonar-project.properties`; gate *Sonar way*). Next.js route files (`ui/src/app/**`) are left out of coverage, still analysed. |
+
+## Apps, environments and keys
+
+- Participants create **UAT apps**. Once their account is approved for production, **Move to production**
+  on an active UAT app makes a **production app**: same name and API products, its own description,
+  IP whitelist, and its **own API key + secret** after an administrator
+  approves it (production apps and their product requests always wait for an administrator).
+- A key works only in its app's environment: tokens name only that environment (`oan_environments`),
+  try-it refuses another environment's app, code samples show only a key of that environment.
+- Portal: My Apps has a **UAT / Production** toggle; the choice is remembered in the browser and the try-it
+  page starts in it. Console Apps & Keys filters by environment.
+- Production request (account): the partner's **signing key** - X.509 certificate (PEM / DER) or its public
+  key, checked (no private key, valid dates, RSA ≥ 2048 / EC P-256 / P-384 / Ed25519, both must match).
+  Approving production stores it as the partner's key (`/oan/partners/{id}/jwks.json`). Admins preview the
+  uploaded documents in a dialog.
+- Details and production settings: [DEPLOYMENT.md](DEPLOYMENT.md), section *UAT and production apps*.
 
 ## Branches and pull requests
 

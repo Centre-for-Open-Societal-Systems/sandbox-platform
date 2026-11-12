@@ -9,6 +9,7 @@ from app.config.settings import settings
 from app.core.deps import CountryCode, DbSession, Locale
 from app.core.responses import ok
 from app.services import (
+    catalog_export_service,
     catalog_service,
     content_service,
     file_access_service,
@@ -58,6 +59,12 @@ def catalog_product(product_id: int, db: DbSession):
         "Product loaded.",
         catalog_service.get_product(db, product_id, published_only=True).model_dump(),
     )
+
+
+@router.get("/catalog/products/{product_id}/openapi")
+def catalog_product_openapi(product_id: int, db: DbSession):
+    """Public: OpenAPI 3.0 document of a published product (sandbox/UAT gateway, no keys)."""
+    return ok("OpenAPI document generated.", catalog_export_service.openapi_document(db, product_id))
 
 
 @router.get("/masters/{kind}")

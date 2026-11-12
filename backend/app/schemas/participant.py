@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from fastapi import UploadFile
-from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    EmailStr,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
+from app.config.settings import settings
 from app.models.enums import Environment, ProfileType
 from app.schemas.common import ListQuery, ORMModel
 from app.utils.validators import (
@@ -297,16 +305,77 @@ class QueryCreate(BaseModel):
     description: str = Field(..., min_length=3, max_length=4000)
 
 
+def ticket_number(query_id: int) -> str:
+    """The reference a participant and the team quote (also in mail subjects), e.g. TKT-000123."""
+    return f"TKT-{query_id:06d}"
+
+
 class QueryOut(ORMModel):
     query_id: int
     participant_id: int | None = None
     query_type: int | None = None
     subject: str | None = None
     description: str | None = None
+    #: 0 open, 1 in progress, 2 answered (waiting for the participant), 3 closed.
     status: int = 0
     response: str | None = None
     added_date: datetime | None = None
     responded_date: datetime | None = None
+    #: When the participant last wrote and is still waiting for an answer (the SLA clock).
+    awaiting_since: datetime | None = None
+    last_message_date: datetime | None = None
+    #: "participant" or "admin".
+    last_message_by: str | None = None
+    closed_date: datetime | None = None
+    #: Filled by the service for the viewer.
+    message_count: int = 0
+    unread: bool = False
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def ticket_no(self) -> str:
+        return ticket_number(self.query_id)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def due_date(self) -> datetime | None:
+        """When an answer is due: SUPPORT_SLA_HOURS after the participant last wrote; none without an SLA."""
+        start = self.awaiting_since or self.added_date
+        if not settings.SUPPORT_SLA_HOURS or start is None:
+            return None
+        return start + timedelta(hours=settings.SUPPORT_SLA_HOURS)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def is_overdue(self) -> bool:
+        """Still open (or in progress) past its due date."""
+        due = self.due_date
+        if due is None or self.status not in (0, 1):
+            return False
+        if due.tzinfo is None:
+            due = due.replace(tzinfo=UTC)
+        return datetime.now(UTC) > due
+
+
+class QueryMessageOut(ORMModel):
+    message_id: int
+    #: "participant", "admin" or "system" (a status event).
+    author_type: str
+    author_name: str | None = None
+    body: str
+    #: Staff-only note; never returned to the participant.
+    is_internal: bool = False
+    #: "portal" now; "email" for a message that arrived by mail.
+    channel: str = "portal"
+    #: When the mail for this message was sent (empty = no mail went out).
+    notified_date: datetime | None = None
+    added_date: datetime | None = None
+
+
+class QueryThreadOut(QueryOut):
+    """A ticket with its conversation, oldest message first."""
+
+    messages: list[QueryMessageOut] = Field(default_factory=list)
 
 
 class AdminQueryOut(QueryOut):
@@ -317,10 +386,37 @@ class AdminQueryOut(QueryOut):
     company_name: str | None = None
 
 
+class AdminQueryThreadOut(AdminQueryOut):
+    messages: list[QueryMessageOut] = Field(default_factory=list)
+
+
 class QueryListQuery(ListQuery):
     #: 0 open, 1 in progress, 2 answered, 3 closed.
     status: int | None = Field(None, ge=0, le=3)
     query_type: int | None = None
+
+
+class QueryMessageCreate(BaseModel):
+    body: str = Field(..., min_length=1, max_length=4000)
+
+    @field_validator("body")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Write a message first.")
+        return value
+
+
+class AdminQueryMessageCreate(QueryMessageCreate):
+    #: A staff-only note: not shown to the participant, no email, status unchanged.
+    internal: bool = False
+    #: Status to set with the reply; empty = answered (2). Ignored for notes.
+    status: int | None = Field(None, ge=0, le=3)
+
+
+class QueryStatusRequest(BaseModel):
+    status: int = Field(..., ge=0, le=3)
 
 
 class QueryRespondRequest(BaseModel):

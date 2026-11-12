@@ -152,7 +152,7 @@ def gateway_status(admin: ManageCatalog):
 
 @router.post("/gateway/sync")
 def gateway_sync(payload: GatewaySyncRequest, admin: ManageCatalog, db: DbSession):
-    report = gateway_sync_service.sync(db, admin, dry_run=payload.dry_run)
+    report = gateway_sync_service.sync(db, admin, dry_run=payload.dry_run, environment=payload.environment)
     message = "Gateway preview ready." if payload.dry_run else "Pulled from the API gateway."
     return ok(message, report)
 

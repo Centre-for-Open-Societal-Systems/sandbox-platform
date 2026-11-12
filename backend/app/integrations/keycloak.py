@@ -14,6 +14,13 @@ cached until shortly before it expires.
 
 Realm, shared client, roles and token claims are set up once by
 ``scripts/keycloak/setup_partner_realm.py``.
+
+Production may run its own Keycloak (``KEYCLOAK_PROD_URL``). App clients of
+production (GATEWAY_PARTNER_AUTH=oauth) are then written there: every call in
+a ``with use_realm(realm_for("PRODUCTION"))`` block goes to that realm, with
+its own service account. Outside such a block, and whenever
+``KEYCLOAK_PROD_URL`` is empty, everything goes to the main Keycloak
+(``KEYCLOAK_URL``), as before. Participant users always stay on the main one.
 """
 
 from __future__ import annotations
@@ -21,11 +28,14 @@ from __future__ import annotations
 import json
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
 import httpx
-import jwt
 
 from app.config.settings import settings
 from app.core.exceptions import UpstreamError, ValidationError
@@ -34,7 +44,8 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 _token_lock = threading.Lock()
-_token: dict[str, Any] = {"value": None, "expires_at": 0.0}
+# Service-account tokens, one per realm: (url, realm, client id) -> value, expiry.
+_tokens: dict[tuple[str, str, str], dict[str, Any]] = {}
 # Keycloak's internal id of the shared partner client (looked up once).
 _partner_client: dict[str, str] = {}
 
@@ -42,6 +53,85 @@ _partner_client: dict[str, str] = {}
 ENVIRONMENT_ROLES = ("uat", "production")
 #: Roles of environments that no longer exist: taken away at the next sync.
 RETIRED_ROLES = ("sandbox",)
+
+PRODUCTION = "PRODUCTION"
+
+
+@dataclass(frozen=True, slots=True)
+class Realm:
+    """A Keycloak realm the sandbox writes app clients to."""
+
+    #: "UAT" for the main Keycloak, "PRODUCTION" for production's own.
+    environment: str
+    url: str
+    public_url: str
+    name: str
+    admin_client_id: str
+    admin_client_secret: str
+    certs_url: str
+    #: The setting named in error messages.
+    url_setting: str
+
+
+def main_realm() -> Realm:
+    """The main Keycloak (KEYCLOAK_*): participant users, UAT, and production unless it has its own."""
+    return Realm(
+        environment="UAT",
+        url=settings.KEYCLOAK_URL,
+        public_url=settings.KEYCLOAK_PUBLIC_URL,
+        name=settings.KEYCLOAK_REALM,
+        admin_client_id=settings.KEYCLOAK_ADMIN_CLIENT_ID,
+        admin_client_secret=settings.KEYCLOAK_ADMIN_CLIENT_SECRET,
+        certs_url=settings.keycloak_certs_url,
+        url_setting="KEYCLOAK_URL",
+    )
+
+
+def production_realm() -> Realm | None:
+    """Production's own Keycloak (KEYCLOAK_PROD_*), or None when production uses the main one."""
+    if not settings.KEYCLOAK_PROD_URL:
+        return None
+    url = settings.KEYCLOAK_PROD_URL
+    name = settings.KEYCLOAK_PROD_REALM or settings.KEYCLOAK_REALM
+    return Realm(
+        environment=PRODUCTION,
+        url=url,
+        public_url=settings.KEYCLOAK_PROD_PUBLIC_URL,
+        name=name,
+        admin_client_id=settings.KEYCLOAK_PROD_ADMIN_CLIENT_ID or settings.KEYCLOAK_ADMIN_CLIENT_ID,
+        admin_client_secret=settings.KEYCLOAK_PROD_ADMIN_CLIENT_SECRET,
+        certs_url=settings.KEYCLOAK_PROD_JWKS_URL
+        or f"{url.rstrip('/')}/realms/{name}/protocol/openid-connect/certs",
+        url_setting="KEYCLOAK_PROD_URL",
+    )
+
+
+def separate_production() -> bool:
+    return production_realm() is not None
+
+
+def realm_for(environment: str) -> Realm:
+    """The realm holding ``environment``'s app clients."""
+    if str(environment).upper() == PRODUCTION:
+        return production_realm() or main_realm()
+    return main_realm()
+
+
+_active: ContextVar[Realm | None] = ContextVar("keycloak_realm", default=None)
+
+
+@contextmanager
+def use_realm(realm: Realm) -> Iterator[Realm]:
+    """Send the Keycloak calls made inside the block to ``realm``."""
+    token = _active.set(realm)
+    try:
+        yield realm
+    finally:
+        _active.reset(token)
+
+
+def current_realm() -> Realm:
+    return _active.get() or main_realm()
 
 
 def is_configured() -> bool:
@@ -55,9 +145,22 @@ def is_configured() -> bool:
     )
 
 
+def _realm_configured(realm: Realm) -> bool:
+    if realm.url_setting == "KEYCLOAK_URL":
+        return is_configured()
+    return bool(
+        settings.KEYCLOAK_PROVISIONING_ENABLED
+        and realm.url
+        and realm.name
+        and realm.admin_client_id
+        and realm.admin_client_secret
+    )
+
+
 def token_url(public: bool = True) -> str:
-    base = (settings.KEYCLOAK_PUBLIC_URL if public else "") or settings.KEYCLOAK_URL
-    return f"{base.rstrip('/')}/realms/{quote(settings.KEYCLOAK_REALM)}/protocol/openid-connect/token"
+    realm = current_realm()
+    base = (realm.public_url if public else "") or realm.url
+    return f"{base.rstrip('/')}/realms/{quote(realm.name)}/protocol/openid-connect/token"
 
 
 def console_url(user_id: str) -> str:
@@ -268,20 +371,12 @@ def request_app_token(client_id: str, secret: str) -> dict[str, Any]:
             timeout=settings.KEYCLOAK_TIMEOUT,
         )
     except httpx.HTTPError as exc:
-        raise UpstreamError("Keycloak could not be reached at KEYCLOAK_URL.") from exc
+        raise UpstreamError(f"Keycloak could not be reached at {current_realm().url_setting}.") from exc
     if response.status_code != 200:
         raise UpstreamError(
             f"Keycloak refused the app's key ({response.status_code}); its client may not be synced yet."
         )
     return response.json()
-
-
-def unverified_claims(token: str) -> dict[str, Any]:
-    """A token's claims, for display only: the gateway verifies the token, not this."""
-    try:
-        return jwt.decode(token, options={"verify_signature": False})
-    except jwt.InvalidTokenError:
-        return {}
 
 
 def _client_uuid(client_id: str) -> str:
@@ -308,32 +403,35 @@ def _client_role(client: str, client_id: str, name: str) -> dict[str, Any]:
 
 
 def _admin_token() -> str:
+    realm = current_realm()
+    cached = _tokens.setdefault((realm.url, realm.name, realm.admin_client_id), {"value": None, "expires_at": 0.0})
+    prefix = "KEYCLOAK_PROD_ADMIN_CLIENT" if realm.url_setting == "KEYCLOAK_PROD_URL" else "KEYCLOAK_ADMIN_CLIENT"
     with _token_lock:
-        if _token["value"] and time.monotonic() < _token["expires_at"]:
-            return _token["value"]
+        if cached["value"] and time.monotonic() < cached["expires_at"]:
+            return cached["value"]
         try:
             response = httpx.post(
                 token_url(public=False),
                 data={
                     "grant_type": "client_credentials",
-                    "client_id": settings.KEYCLOAK_ADMIN_CLIENT_ID,
-                    "client_secret": settings.KEYCLOAK_ADMIN_CLIENT_SECRET,
+                    "client_id": realm.admin_client_id,
+                    "client_secret": realm.admin_client_secret,
                 },
                 timeout=settings.KEYCLOAK_TIMEOUT,
             )
         except httpx.HTTPError as exc:
-            raise UpstreamError("Keycloak could not be reached at KEYCLOAK_URL.") from exc
+            raise UpstreamError(f"Keycloak could not be reached at {realm.url_setting}.") from exc
         if response.status_code != 200:
             logger.warning("Keycloak service-account login answered %s", response.status_code)
             raise UpstreamError(
                 f"Keycloak refused the sandbox's service account ({response.status_code}); "
-                "check KEYCLOAK_ADMIN_CLIENT_ID / KEYCLOAK_ADMIN_CLIENT_SECRET."
+                f"check {prefix}_ID / {prefix}_SECRET."
             )
         body = response.json()
-        _token["value"] = body["access_token"]
+        cached["value"] = body["access_token"]
         # Renew 30 s early so a call never starts with an expiring token.
-        _token["expires_at"] = time.monotonic() + max(int(body.get("expires_in", 60)) - 30, 5)
-        return _token["value"]
+        cached["expires_at"] = time.monotonic() + max(int(body.get("expires_in", 60)) - 30, 5)
+        return cached["value"]
 
 
 def _call(
@@ -343,12 +441,18 @@ def _call(
     params: dict[str, Any] | None = None,
     missing_ok: bool = False,
 ) -> Any:
-    if not is_configured():
+    realm = current_realm()
+    if not _realm_configured(realm):
+        if realm.url_setting == "KEYCLOAK_PROD_URL":
+            raise ValidationError(
+                "Production's Keycloak needs KEYCLOAK_PROVISIONING_ENABLED, KEYCLOAK_PROD_URL and the "
+                "KEYCLOAK_PROD_ADMIN_CLIENT_* service account."
+            )
         raise ValidationError(
             "Keycloak provisioning needs KEYCLOAK_PROVISIONING_ENABLED, KEYCLOAK_URL, KEYCLOAK_REALM, "
             "KEYCLOAK_PARTNER_CLIENT_ID and the KEYCLOAK_ADMIN_CLIENT_* service account."
         )
-    url = f"{settings.KEYCLOAK_URL.rstrip('/')}/admin/realms/{quote(settings.KEYCLOAK_REALM)}{path}"
+    url = f"{realm.url.rstrip('/')}/admin/realms/{quote(realm.name)}{path}"
     try:
         response = httpx.request(
             method,
@@ -359,7 +463,7 @@ def _call(
             timeout=settings.KEYCLOAK_TIMEOUT,
         )
     except httpx.HTTPError as exc:
-        raise UpstreamError("Keycloak could not be reached at KEYCLOAK_URL.") from exc
+        raise UpstreamError(f"Keycloak could not be reached at {realm.url_setting}.") from exc
     if missing_ok and response.status_code == 404:
         return None
     if response.status_code >= 400:

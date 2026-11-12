@@ -115,7 +115,7 @@ def session_expired(added: datetime | None, last_action: datetime | None) -> boo
 # A valid hash checked when the account does not exist, so a sign-in for an
 # unknown address takes as long as one with a wrong password.
 _DUMMY_HASH = bcrypt.hashpw(
-    b"timing-equaliser", bcrypt.gensalt(rounds=settings.BCRYPT_ROUNDS)
+    secrets.token_bytes(32), bcrypt.gensalt(rounds=settings.BCRYPT_ROUNDS)
 ).decode()
 
 

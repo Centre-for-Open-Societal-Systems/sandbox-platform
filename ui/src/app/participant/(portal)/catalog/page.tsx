@@ -28,7 +28,7 @@ export default function PortalCatalogPage() {
   const allProducts = productsQuery.data ?? [];
   const categories = Array.from(
     new Set(allProducts.map((product) => product.category_name).filter((name): name is string => Boolean(name))),
-  ).sort();
+  ).sort((a, b) => a.localeCompare(b));
 
   const needle = search.trim().toLowerCase();
   const products = allProducts.filter(

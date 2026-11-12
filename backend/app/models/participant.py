@@ -45,6 +45,7 @@ from app.models.base import (
     BigIntPk,
     CountryScopedMixin,
     SoftDeleteMixin,
+    TimestampMixin,
     UniqueIdMixin,
     utcnow,
 )
@@ -263,3 +264,42 @@ class ParticipantQuery(Base, UniqueIdMixin, AuditMixin):
     response: Mapped[str | None] = mapped_column(Text)
     responded_by: Mapped[int | None] = mapped_column(BigInteger)
     responded_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # The conversation lives in ``ParticipantQueryMessage``; ``description`` and
+    # ``response`` keep the first message and the latest public reply for older clients.
+    #: When the participant last wrote and no one has answered yet (the SLA clock); empty =
+    #: counted from ``added_date``.
+    awaiting_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_message_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    #: "participant" or "admin" - who wrote last (internal notes do not count).
+    last_message_by: Mapped[str | None] = mapped_column(String(12))
+    #: Unread markers: a side has unread messages when the other side wrote after this.
+    participant_read_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    admin_read_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    closed_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ParticipantQueryMessage(Base, UniqueIdMixin, TimestampMixin):
+    """One message of a support ticket (a conversation, oldest first).
+
+    ``author_type`` is "participant", "admin" or "system" (status events).
+    ``is_internal`` notes are staff-only and never reach the participant.
+    ``channel`` and ``external_id`` are the seam for email: a mail sent for a
+    message is recorded in ``notified_date``; a mail that arrives later is
+    stored with channel "email" and its RFC Message-ID in ``external_id``.
+    """
+
+    __tablename__ = "participant_query_message"
+
+    message_id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    query_id: Mapped[int] = mapped_column(
+        ForeignKey("participant_query.query_id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    author_type: Mapped[str] = mapped_column(String(12), nullable=False)
+    author_id: Mapped[int | None] = mapped_column(BigInteger)
+    author_name: Mapped[str | None] = mapped_column(String(200))
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    is_internal: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    channel: Mapped[str] = mapped_column(String(16), default="portal", nullable=False)
+    external_id: Mapped[str | None] = mapped_column(String(255), index=True)
+    notified_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

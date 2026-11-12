@@ -119,6 +119,8 @@ class GatewaySyncRequest(BaseModel):
 
     #: Compute the report without saving anything.
     dry_run: bool = False
+    #: Which gateway to read: PRODUCTION reads production's own (GATEWAY_PROD_ADMIN_URL).
+    environment: Environment = Environment.UAT
 
 
 # ---------------------------------------------------------------- endpoints

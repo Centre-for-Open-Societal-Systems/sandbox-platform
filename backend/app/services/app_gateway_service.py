@@ -27,6 +27,14 @@ admin key is enough) and puts the granted route ids in the token's
 consumer plugins above (IP whitelist, per-product limits, http-logger) do not
 apply then; the routes limit calls per app themselves.
 
+Every app belongs to one environment (``ParticipantApp.environment``) and has
+its own keys there: a UAT app works only on UAT, a production app (made with
+"Move to production") only on production. Its clients / consumer go to that
+environment's Keycloak and gateway - production's own when KEYCLOAK_PROD_URL /
+GATEWAY_PROD_ADMIN_URL are set, else the main ones - and its tokens name only
+that environment (``oan_environments``). A production app's keys work only while
+its owner is approved for production.
+
 ``sync_app`` is idempotent and never raises: a gateway failure is stored on
 the app (``gateway_status`` FAILED, ``gateway_error``) and can be retried.
 """
@@ -49,6 +57,7 @@ from app.models.catalog import Endpoint, Product
 from app.models.enums import (
     AppStatus,
     CredentialStatus,
+    Environment,
     GatewaySyncStatus,
     SubscriptionStatus,
 )
@@ -88,6 +97,18 @@ def consumer_name(app: ParticipantApp) -> str:
     return "oanapp_" + str(app.unique_id).replace("-", "")
 
 
+def credential_is_live(credential: ParticipantAppCredential) -> bool:
+    """Active and not past its expiry: only these reach the gateway."""
+    if credential.status != int(CredentialStatus.ACTIVE):
+        return False
+    expires = credential.expires_date
+    if expires is None:
+        return True
+    if expires.tzinfo is None:  # SQLite hands datetimes back naive
+        expires = expires.replace(tzinfo=UTC)
+    return expires > datetime.now(UTC)
+
+
 def credential_ids(credential: ParticipantAppCredential) -> tuple[str, str]:
     return f"{credential.unique_id}-key", f"{credential.unique_id}-hmac"
 
@@ -95,30 +116,35 @@ def credential_ids(credential: ParticipantAppCredential) -> tuple[str, str]:
 def sync_app(
     db: Session, app: ParticipantApp, routes: list[gateway.GatewayRoute] | None = None
 ) -> ParticipantApp:
-    """Bring the gateway in line with ``app``; ``routes`` saves a fetch when syncing many."""
+    """Bring the gateway in line with ``app``; ``routes`` (of the app's environment's
+    gateway) save a fetch when syncing many."""
     if not gateway.app_sync_configured():
         app.gateway_status = str(GatewaySyncStatus.DISABLED)
         app.gateway_error = None
         db.commit()
         return app
     try:
-        if app.is_deleted or app.status != int(AppStatus.ACTIVE) or not owner_active(
-            db.get(Participant, app.participant_id)
+        owner = db.get(Participant, app.participant_id)
+        with keycloak.use_realm(keycloak.realm_for(app.environment)), gateway.use_target(
+            gateway.target_for(app.environment)
         ):
-            if oauth_clients():
-                _sync_oauth_clients(app, None)
-            elif app.gateway_consumer:
-                gateway.delete_consumer(app.gateway_consumer)
-            app.gateway_routes, app.gateway_warnings = [], []
-        elif oauth_clients():
-            # The routes check the token, not a consumer: only read the routes (their ids
-            # go into the token's oan_routes), never write to the gateway.
-            app.gateway_routes, app.gateway_warnings = resolve_routes(
-                db, app, gateway.list_routes() if routes is None else routes
-            )
-            _sync_oauth_clients(app, db.get(Participant, app.participant_id))
-        else:
-            _write_consumer(db, app, gateway.list_routes() if routes is None else routes)
+            if app.is_deleted or app.status != int(AppStatus.ACTIVE) or not owner_active(owner, app.environment):
+                if oauth_clients():
+                    _sync_oauth_clients(app, None)
+                elif app.gateway_consumer:
+                    gateway.delete_consumer(app.gateway_consumer)
+                app.gateway_routes, app.gateway_warnings = [], []
+            elif oauth_clients():
+                # The routes check the token, not a consumer: only read the routes (their ids
+                # go into the token's oan_routes), never write to the gateway.
+                app.gateway_routes, app.gateway_warnings = resolve_routes(
+                    db, app, gateway.list_routes() if routes is None else routes
+                )
+                _sync_oauth_clients(app, owner)
+            else:
+                _write_consumer(db, app, gateway.list_routes() if routes is None else routes)
+        if is_production(app):
+            _forget_on_main(app)
         app.gateway_status = str(GatewaySyncStatus.SYNCED)
         app.gateway_error = None
         app.gateway_synced_at = datetime.now(UTC)
@@ -135,20 +161,18 @@ def oauth_clients() -> bool:
     return settings.GATEWAY_PARTNER_AUTH == "oauth"
 
 
+def is_production(app: ParticipantApp) -> bool:
+    return str(app.environment).upper() == str(Environment.PRODUCTION)
+
+
 def _sync_oauth_clients(app: ParticipantApp, owner: Participant | None) -> None:
     """One Keycloak confidential client per active key (client_id = API key, secret = API
-    secret); its token names the owner, the app, the approved environments and the routes
-    of the app's products (the same list as the consumer's whitelist). ``owner`` None:
-    every client of the app goes."""
-    environments = []
-    if owner is not None:
-        if owner.is_uat_approved:
-            environments.append("uat")
-        if owner.is_prod_approved:
-            environments.append("production")
+    secret) in the app's environment's realm; its token names the owner, the app, the
+    app's environment and the routes of the app's products (the same list as the
+    consumer's whitelist). ``owner`` None: every client of the app goes."""
     for credential in app.credentials:
         api_key = crypto.decrypt(credential.api_key_encrypted)
-        if owner is None or credential.status != int(CredentialStatus.ACTIVE):
+        if owner is None or not credential_is_live(credential):
             keycloak.delete_app_client(api_key)
             continue
         keycloak.upsert_app_client(
@@ -159,21 +183,44 @@ def _sync_oauth_clients(app: ParticipantApp, owner: Participant | None) -> None:
             {
                 "participant_uid": str(owner.unique_id),
                 "oan_app": str(app.unique_id),
-                "oan_environments": environments,
+                "oan_environments": [str(app.environment).lower()],
                 "oan_routes": list(app.gateway_routes or []),
             },
         )
 
 
-def owner_active(participant: Participant | None) -> bool:
-    """Whether the participant may hold working keys (else their consumers are removed)."""
-    return bool(
+def _forget_on_main(app: ParticipantApp) -> None:
+    """A production app lives only on production's own Keycloak / gateway once they are
+    configured: copies left on the main ones (written before) are removed. Best effort."""
+    try:
+        if oauth_clients() and keycloak.separate_production():
+            with keycloak.use_realm(keycloak.main_realm()):
+                _sync_oauth_clients(app, None)
+        elif not oauth_clients() and gateway.separate_production() and app.gateway_consumer:
+            with gateway.use_target(gateway.main_target()):
+                gateway.delete_consumer(app.gateway_consumer)
+    except AppError as exc:
+        logger.warning("Old copy of production app %s not removed: %s", app.app_id, exc.message)
+
+
+def owner_active(participant: Participant | None, environment: str = str(Environment.UAT)) -> bool:
+    """Whether the participant may hold working keys in ``environment`` (else their
+    clients / consumers there are removed)."""
+    active = bool(
         participant is not None
         and not participant.is_deleted
         and participant.is_enabled
         and participant.is_uat_approved
         and not participant.is_rejected
     )
+    if str(environment).upper() == str(Environment.PRODUCTION):
+        return active and production_access(participant)
+    return active
+
+
+def production_access(participant: Participant) -> bool:
+    """Approved for production and not switched off (as try-it and Keycloak roles read it)."""
+    return bool(participant.is_prod_approved and participant.is_prod_enabled)
 
 
 def sync_participant_apps(db: Session, participant_id: int) -> None:
@@ -196,17 +243,26 @@ def sync_apps(db: Session, apps: Iterable[ParticipantApp]) -> None:
     apps = list(apps)
     if not apps:
         return
-    routes = None
-    if gateway.app_sync_configured():
-        try:
-            routes = gateway.list_routes()
-        except AppError as exc:
-            for app in apps:
-                app.gateway_status, app.gateway_error = str(GatewaySyncStatus.FAILED), exc.message
-            db.commit()
-            return
+    if not gateway.app_sync_configured():
+        for app in apps:
+            sync_app(db, app)
+        return
+    # The routes of each gateway, read once; an unreachable one fails its apps only.
+    routes: dict[gateway.AdminTarget, list[gateway.GatewayRoute] | AppError] = {}
     for app in apps:
-        sync_app(db, app, routes)
+        target = gateway.target_for(app.environment)
+        if target not in routes:
+            try:
+                with gateway.use_target(target):
+                    routes[target] = gateway.list_routes()
+            except AppError as exc:
+                routes[target] = exc
+        found = routes[target]
+        if isinstance(found, AppError):
+            app.gateway_status, app.gateway_error = str(GatewaySyncStatus.FAILED), found.message
+            db.commit()
+            continue
+        sync_app(db, app, found)
 
 
 def _write_consumer(db: Session, app: ParticipantApp, routes: list[gateway.GatewayRoute]) -> None:
@@ -230,7 +286,7 @@ def _write_consumer(db: Session, app: ParticipantApp, routes: list[gateway.Gatew
 
     wanted: set[str] = set()
     for credential in app.credentials:
-        if credential.status != int(CredentialStatus.ACTIVE):
+        if not credential_is_live(credential):
             continue
         key_id, hmac_id = credential_ids(credential)
         api_key = crypto.decrypt(credential.api_key_encrypted)

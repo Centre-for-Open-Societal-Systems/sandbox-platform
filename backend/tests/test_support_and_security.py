@@ -15,6 +15,7 @@ from app.main import create_app
 from app.models.admin import AdmUser
 from app.models.participant import Participant, ParticipantRequestInfo
 from tests.conftest import ADMIN_PASSWORD, PARTICIPANT_PASSWORD
+from tests.keys import RSA_KEY, certificate, public_pem
 
 COMPLETE_PROFILE = {
     "profile_type": "ORGANIZATION",
@@ -270,7 +271,7 @@ def test_environment_request_keeps_the_production_details(
     assert profile.status_code == 200, profile.text
 
     details = {
-        "public_key": "-----BEGIN PUBLIC KEY-----abc-----END PUBLIC KEY-----",
+        "public_key": public_pem(RSA_KEY),
         "endpoint_ids": [1, 2],
         "daily_volume": 5000,
         "integration_contact": "Abebe, +251911234567",
@@ -280,12 +281,16 @@ def test_environment_request_keeps_the_production_details(
         "/oan/participant/promotion-requests",
         headers=participant_headers,
         data={"target_environment": "PRODUCTION", "extra_data": json.dumps(details)},
-        files={"certificate": ("client.pem", b"-----BEGIN CERTIFICATE-----", "text/plain")},
+        files={"certificate": ("client.pem", certificate(), "text/plain")},
     )
     assert response.status_code == 200, response.text
 
     request = db_session.query(ParticipantRequestInfo).one()
-    assert request.extra_data == details
+    key = request.extra_data.pop("key")
+    assert request.extra_data == {**details, "public_key": public_pem(RSA_KEY).strip()}
+    assert key["source"] == "certificate" and key["algorithm"] == "RSA 2048"
+    assert key["certificate"]["common_name"] == "partner.example.org"
+    assert len(key["fingerprint_sha256"].split(":")) == 32
     assert request.certificate_path.endswith("client.pem")
 
     listed = client.get("/oan/participant/promotion-requests", headers=participant_headers)
@@ -336,7 +341,8 @@ def test_admin_detail_shows_documents_and_requests(
     client.post(
         "/oan/participant/promotion-requests",
         headers=participant_headers,
-        data={"target_environment": "PRODUCTION", "extra_data": json.dumps({"daily_volume": 10})},
+        data={"target_environment": "PRODUCTION",
+              "extra_data": json.dumps({"daily_volume": 10, "public_key": public_pem(RSA_KEY)})},
     )
     verified_participant.id_proof = "participants/id-proof/proof.pdf"
     db_session.commit()
@@ -349,7 +355,9 @@ def test_admin_detail_shows_documents_and_requests(
     data = detail.json()["data"]
     assert data["id_proof"] == "participants/id-proof/proof.pdf"
     assert data["requests"][0]["target_environment"] == "PRODUCTION"
-    assert data["requests"][0]["extra_data"] == {"daily_volume": 10}
+    extra = data["requests"][0]["extra_data"]
+    assert extra["daily_volume"] == 10
+    assert extra["key"]["source"] == "public_key" and extra["key"]["algorithm"] == "RSA 2048"
 
     proof = client.get("/oan/files/participants/id-proof/proof.pdf", headers=admin_headers)
     assert proof.headers["content-type"] == "application/pdf"
@@ -609,3 +617,34 @@ def test_reset_needs_a_token_or_email_and_code(client):
         "/oan/participant/auth/reset-password", json={"new_password": "Fresh#Pass2026"}
     )
     assert response.status_code == 400
+
+
+def test_production_request_needs_a_valid_key_and_approval_makes_it_the_partners(
+    client, upload_dir, db_session, verified_participant, participant_headers, admin_headers
+):
+    assert client.put("/oan/participant/profile", headers=participant_headers, data=COMPLETE_PROFILE).status_code == 200
+
+    def ask(**files_and_key):
+        key = files_and_key.pop("public_key", None)
+        return client.post(
+            "/oan/participant/promotion-requests",
+            headers=participant_headers,
+            data={"target_environment": "PRODUCTION",
+                  "extra_data": json.dumps({"public_key": key} if key else {})},
+            files=files_and_key or None,
+        )
+
+    missing = ask()
+    assert missing.status_code == 400 and "Upload your certificate" in missing.json()["message"]
+    garbage = ask(certificate=("client.crt", b"-----BEGIN CERTIFICATE-----x", "text/plain"))
+    assert garbage.status_code == 400 and "certificate could not be read" in garbage.json()["message"]
+    pdf = ask(certificate=("certificate.pdf", b"%PDF-1.4", "application/pdf"))
+    assert pdf.status_code == 400 and "file type '.pdf'" in pdf.json()["message"].lower()
+    assert db_session.query(ParticipantRequestInfo).count() == 0  # nothing kept from refused requests
+
+    assert ask(public_key=public_pem(RSA_KEY)).status_code == 200
+    approved = client.post("/oan/admin/participants/approve", headers=admin_headers,
+                           json={"participant_id": verified_participant.participant_id, "environment": "PRODUCTION"})
+    assert approved.status_code == 200, approved.text
+    db_session.refresh(verified_participant)
+    assert verified_participant.public_key == public_pem(RSA_KEY).strip()

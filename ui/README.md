@@ -1,6 +1,6 @@
 # OAN Sandbox Frontend
 
-Web client for the **Open Agri Net (OAN)** developer sandbox. Built with
+Web client for the **EOAN (Open Agri Net)** developer sandbox. Built with
 Next.js 16 (App Router, Turbopack), React 19.3, TypeScript and Tailwind CSS 4.
 
 It serves three audiences from one codebase:
@@ -79,7 +79,7 @@ Then open <http://localhost:3005> (run with `npm run dev -- -p 3005`; the API al
 | --- | --- |
 | `NEXT_PUBLIC_API_BASE_URL` | API base including the `/oan` prefix |
 | `NEXT_PUBLIC_DEFAULT_COUNTRY` | ISO-3166 alpha-2 code this deployment serves |
-| `NEXT_PUBLIC_SITE_NAME` | Name shown in the header and page titles |
+| `NEXT_PUBLIC_SITE_NAME` | Name shown in the logo, header and page titles (default `EOAN`) |
 
 These are inlined at build time, so a container image is bound to the API URL
 it was built with. Rebuild when it changes.
@@ -93,6 +93,8 @@ it was built with. Rebuild when it changes.
 | Serve the build | `npm run start` |
 | Lint | `npm run lint` |
 | Type check | `npm run typecheck` |
+| Unit tests | `npm test` (Vitest + Testing Library, `src/**/*.test.tsx`) |
+| Unit tests with coverage | `npm run test:coverage` (writes `coverage/lcov.info` for Sonar; `src/app/**` route files are left out) |
 
 ## Admin console design
 
@@ -116,7 +118,29 @@ Layout (`app/admin/(console)/layout.tsx`): 256 px sidebar that collapses to a
 drawer/flyouts 1100+, toasts 2000.
 
 Design tokens live in `app/globals.css` (`--color-brand-*`, `ink`, `subtle`,
-`hairline`, `surface-soft`, `sidebar-bg`, `table-head`, `nav-active`, `action`).
+`hairline`, `surface-soft`, `sidebar-bg`, `sidebar-active`, `table-head`, `nav-active`,
+`action`, `tone-*`). The sidebar is dark (`#0e3b25`, active item `#0b8535`). The app icons
+are `app/icon.svg`, `app/favicon.ico` and `app/apple-icon.png`.
+
+Each screen's label can differ from its route and API names:
+
+| Label | Route | API and code names |
+| --- | --- | --- |
+| Content Management | `/admin/content` | `CMS` permission |
+| Support Tickets (admin) | `/admin/queries` | `/queries`, `query_type`, `USER_QUERIES` |
+| Help & Support (portal) | `/participant/support` | `/queries`, `SupportQuery` |
+
+### Admin dashboard
+
+- **Counter tiles:** the fill and icon follow the `tone-*` tokens, one meaning each: green for
+  participants, blue for API calls, amber for pending items, purple for products, red for
+  errors. Charts and bars about the same thing use the same tone.
+- **Period filter:** Today, This week or This month (the default) drives Sandbox traffic,
+  Response health and Most-called end-points through
+  `GET /admin/auth/dashboard?period=today|week|month`. The tiles, Onboarding pipeline and
+  Registrations by month do not change with it.
+- **Windows:** in UTC. Today starts at midnight and plots by hour; This week starts on Monday and
+  This month on the 1st, both plotted by day.
 
 ## Participant portal design
 

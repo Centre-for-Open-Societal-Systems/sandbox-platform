@@ -51,7 +51,7 @@ function slugify(value: string): string {
   return value
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
+    .replace(/^-|-$/g, "")
     .slice(0, 100);
 }
 
@@ -73,7 +73,7 @@ export default function ApiProductsPage() {
     mutationFn: ({ id, value }: { id: number; value: boolean }) => adminAppsApi.publishProduct(id, value),
     onSuccess: (product) => {
       notify(product.is_published ? "API product published." : "API product unpublished.", "success");
-      invalidate();
+      void invalidate();
     },
     onError: (error: Error) => notify(error.message, "error"),
   });
@@ -82,7 +82,7 @@ export default function ApiProductsPage() {
     mutationFn: (id: number) => adminAppsApi.deleteProduct(id),
     onSuccess: () => {
       notify("API product deleted.", "success");
-      invalidate();
+      void invalidate();
     },
     onError: (error: Error) => notify(error.message, "error"),
   });
@@ -206,7 +206,7 @@ export default function ApiProductsPage() {
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
-            invalidate();
+            void invalidate();
           }}
         />
       ) : null}

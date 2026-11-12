@@ -12,6 +12,7 @@
 ``POST   /participant/apps/{app_id}/credentials``              new key + secret
 ``DELETE /participant/apps/{app_id}/credentials/{credential_id}``  revoke a key
 ``POST   /participant/apps/{app_id}/token``  the app's access token (OAuth client credentials)
+``POST   /participant/apps/{app_id}/promote``  "Move to production": a production copy of a UAT app
 ``GET    /participant/gateway-auth``        how the gateway identifies callers (try-it page)
 ==========================================  =====================================
 
@@ -28,7 +29,7 @@ from fastapi import APIRouter
 from app.core.deps import CurrentParticipant, DbSession
 from app.core.responses import ok
 from app.core.status_codes import StatusCode
-from app.schemas.app import AppCreate, AppProductsRequest, AppUpdate
+from app.schemas.app import AppCreate, AppProductsRequest, AppPromote, AppUpdate
 from app.services import app_service
 
 router = APIRouter(tags=["User / Apps"])
@@ -48,6 +49,19 @@ def gateway_auth(current: CurrentParticipant):
 def app_token(app_id: str, current: CurrentParticipant, db: DbSession):
     """Client credentials with the app's API key + secret (the secret never leaves the server)."""
     return ok("App token issued.", app_service.get_app_token(db, current.participant, app_id))
+
+
+@router.post("/apps/{app_id}/promote")
+def promote_app(app_id: str, current: CurrentParticipant, db: DbSession, payload: AppPromote | None = None):
+    """"Move to production": a production copy of a UAT app, waiting for an administrator.
+    The body may give production's own description and IP whitelist."""
+    created = app_service.promote_app(db, current, app_id, payload)
+    return ok(
+        "Production app submitted for approval. Its own API key and secret are issued once an "
+        "administrator approves it.",
+        created.model_dump(),
+        code=StatusCode.CREATED,
+    )
 
 
 @router.get("/apps")
@@ -98,6 +112,18 @@ def remove_product(app_id: str, api_product_id: int, current: CurrentParticipant
 def issue_credential(app_id: str, current: CurrentParticipant, db: DbSession):
     credential = app_service.issue_credential(db, current, app_id)
     return ok("New key issued.", credential.model_dump(), code=StatusCode.CREATED)
+
+
+@router.post("/apps/{app_id}/credentials/{credential_id}/rotate")
+def rotate_credential(app_id: str, credential_id: str, current: CurrentParticipant, db: DbSession):
+    credential = app_service.rotate_credential(db, current, app_id, credential_id)
+    return ok("Key rotated.", credential.model_dump())
+
+
+@router.post("/apps/{app_id}/credentials/{credential_id}/reveal")
+def reveal_credential(app_id: str, credential_id: str, current: CurrentParticipant, db: DbSession):
+    credential = app_service.reveal_credential(db, current, app_id, credential_id)
+    return ok("Secret shown once.", credential.model_dump())
 
 
 @router.delete("/apps/{app_id}/credentials/{credential_id}")

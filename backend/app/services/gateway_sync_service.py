@@ -12,7 +12,9 @@ end-points already flagged "served through the API gateway":
 * gateway end-points the gateway no longer serves are reported, not deleted.
 
 ``dry_run`` computes the same report and rolls everything back, so the console
-can show what a pull would change before it is applied.
+can show what a pull would change before it is applied. ``environment``
+PRODUCTION reads production's own gateway (GATEWAY_PROD_ADMIN_URL) when it has
+one; the catalogue is shared, so its routes match the same end-points.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from app.config.settings import settings
 from app.core.deps import AdminPrincipal
 from app.integrations import gateway
 from app.models.catalog import Endpoint, Product
+from app.models.enums import Environment
 from app.repositories.catalog_repository import ProductRepository
 from app.services import audit_service
 from app.services.audit_service import Action
@@ -42,15 +45,22 @@ def status() -> dict[str, Any]:
         "enabled": settings.GATEWAY_SYNC_ENABLED,
         "gateway_type": settings.GATEWAY_TYPE,
         "admin_url_configured": bool(settings.GATEWAY_ADMIN_URL),
+        #: Gateways the console can pull from: UAT, plus PRODUCTION when it has its own.
+        "environments": [str(Environment.UAT)]
+        + ([str(Environment.PRODUCTION)] if gateway.separate_production() else []),
     }
 
 
-def sync(db: Session, admin: AdminPrincipal, dry_run: bool = False) -> dict[str, Any]:
-    snapshot = gateway.fetch()
+def sync(
+    db: Session, admin: AdminPrincipal, dry_run: bool = False, environment: Environment = Environment.UAT
+) -> dict[str, Any]:
+    with gateway.use_target(gateway.target_for(environment)):
+        snapshot = gateway.fetch()
     services = {service.key: service for service in snapshot.services}
 
     report: dict[str, Any] = {
         "gateway_type": snapshot.gateway_type,
+        "environment": str(environment),
         "dry_run": dry_run,
         "services": len(snapshot.services),
         "routes": len(snapshot.routes),
@@ -143,7 +153,9 @@ def sync(db: Session, admin: AdminPrincipal, dry_run: bool = False) -> dict[str,
             Action.GATEWAY_SYNC,
             entity="product",
             description=(
-                f"Pulled from {snapshot.gateway_type}: {len(report['created'])} created, "
+                f"Pulled from {snapshot.gateway_type}"
+                f"{' (production gateway)' if environment == Environment.PRODUCTION else ''}: "
+                f"{len(report['created'])} created, "
                 f"{len(report['updated'])} updated, {report['unchanged']} unchanged, "
                 f"{len(report['missing'])} not on the gateway"
             ),

@@ -34,8 +34,9 @@ export default async function TermsPage() {
   const sections = await loadTerms();
   const lastUpdated = sections
     .map((section) => section.modify_date)
-    .filter(Boolean)
-    .sort()
+    .filter((date): date is string => Boolean(date))
+    // ISO timestamps: code-unit order is time order.
+    .sort((a, b) => (a < b ? -1 : Number(a > b)))
     .at(-1);
 
   return (
