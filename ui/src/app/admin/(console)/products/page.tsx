@@ -59,6 +59,8 @@ export default function ProductsPage() {
   const [specText, setSpecText] = React.useState("");
   const [replaceExisting, setReplaceExisting] = React.useState(false);
   const [syncReport, setSyncReport] = React.useState<GatewaySyncReport | null>(null);
+  // Shown only when production has its own gateway (GATEWAY_PROD_ADMIN_URL).
+  const [pullEnvironment, setPullEnvironment] = React.useState<"UAT" | "PRODUCTION">("UAT");
 
   // GATEWAY_SYNC_ENABLED on the API decides whether "Pull from gateway" is offered.
   const gatewayQuery = useQuery({
@@ -82,7 +84,7 @@ export default function ProductsPage() {
   });
 
   function invalidate() {
-    queryClient.invalidateQueries({ queryKey: ["admin", "products"] });
+    void queryClient.invalidateQueries({ queryKey: ["admin", "products"] });
   }
 
   const save = useMutation({
@@ -143,7 +145,8 @@ export default function ProductsPage() {
 
   // Preview first (dry run), then apply from the dialog.
   const gatewaySync = useMutation({
-    mutationFn: (dryRun: boolean) => catalogApi.gatewaySync(dryRun),
+    mutationFn: ({ dryRun, environment }: { dryRun: boolean; environment: "UAT" | "PRODUCTION" }) =>
+      catalogApi.gatewaySync(dryRun, environment),
     onSuccess: (report) => {
       setSyncReport(report);
       if (!report.dry_run) {
@@ -287,16 +290,29 @@ export default function ProductsPage() {
               </p>
             </div>
           </div>
+          <div className="flex shrink-0 items-center gap-2">
+          {(gatewayStatus.environments ?? []).includes("PRODUCTION") ? (
+            <select
+              aria-label="Gateway to pull from"
+              value={pullEnvironment}
+              onChange={(event) => setPullEnvironment(event.target.value as "UAT" | "PRODUCTION")}
+              className="h-10 rounded-[10px] border border-hairline bg-white px-3 text-sm font-semibold text-ink focus:border-brand-bright focus:outline-none"
+            >
+              <option value="UAT">UAT gateway</option>
+              <option value="PRODUCTION">Production gateway</option>
+            </select>
+          ) : null}
           <Button
             variant="outline"
             className="shrink-0"
             loading={gatewaySync.isPending && syncReport === null}
             disabled={!gatewayStatus.admin_url_configured}
-            onClick={() => gatewaySync.mutate(true)}
+            onClick={() => gatewaySync.mutate({ dryRun: true, environment: pullEnvironment })}
           >
             <CloudDownload className="h-4 w-4" aria-hidden />
             Pull from {gatewayName}
           </Button>
+          </div>
         </div>
       ) : null}
 
@@ -467,8 +483,8 @@ export default function ProductsPage() {
               <DialogHeader>
                 <DialogTitle>
                   {syncReport.dry_run
-                    ? `Pull from ${GATEWAY_NAMES[syncReport.gateway_type]}: preview`
-                    : `Pulled from ${GATEWAY_NAMES[syncReport.gateway_type]}`}
+                    ? `Pull from ${GATEWAY_NAMES[syncReport.gateway_type]}${productionSuffix(syncReport)}: preview`
+                    : `Pulled from ${GATEWAY_NAMES[syncReport.gateway_type]}${productionSuffix(syncReport)}`}
                 </DialogTitle>
                 <DialogDescription>
                   {syncReport.routes} routes in {syncReport.services} services, {syncReport.operations} operations.
@@ -535,7 +551,7 @@ export default function ProductsPage() {
                 {syncReport.dry_run && pendingChanges(syncReport) > 0 ? (
                   <Button
                     loading={gatewaySync.isPending}
-                    onClick={() => gatewaySync.mutate(false)}
+                    onClick={() => gatewaySync.mutate({ dryRun: false, environment: syncReport.environment ?? "UAT" })}
                   >
                     <CloudDownload className="h-4 w-4" aria-hidden />
                     Apply pull
@@ -552,6 +568,11 @@ export default function ProductsPage() {
 
 function pendingChanges(report: GatewaySyncReport): number {
   return report.created_count + report.updated_count;
+}
+
+/** " (production gateway)" when the report read production's own gateway. */
+function productionSuffix(report: GatewaySyncReport): string {
+  return report.environment === "PRODUCTION" ? " (production gateway)" : "";
 }
 
 /** One count tile; ``tone`` colours a non-zero value. */

@@ -11,24 +11,29 @@ from app.core.deps import CurrentParticipant, DbSession
 from app.core.exceptions import ValidationError
 from app.core.responses import ok
 from app.models.enums import Environment
-from app.repositories.participant_repository import ParticipantQueryRepository
 from app.schemas.participant import (
     ParticipantOut,
     ProfileForm,
     PromotionDetails,
     PromotionRequestOut,
     QueryCreate,
-    QueryOut,
+    QueryMessageCreate,
 )
-from app.services import log_service, participant_service
+from app.services import (
+    log_service,
+    participant_data_export_service,
+    participant_service,
+    support_service,
+)
 from app.services.participant_auth_service import available_environments
-from app.utils.files import save_upload
+from app.utils import partner_keys
+from app.utils.files import save_upload, validate_upload
 
 router = APIRouter(tags=["User / Portal"])
 
 ID_PROOF_EXTENSIONS = {"pdf", "png", "jpg", "jpeg"}
-#: Public certificates only - a private key (.key) is never accepted.
-CERTIFICATE_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "pem", "crt", "cer"}
+#: X.509 certificates only (PEM or DER) - a private key (.key) is never accepted.
+CERTIFICATE_EXTENSIONS = partner_keys.CERTIFICATE_EXTENSIONS
 DOCUMENT_EXTENSIONS = {"pdf", "png", "jpg", "jpeg"}
 
 
@@ -58,6 +63,12 @@ async def update_profile(
         db, current.participant, values, stored.path if stored else None
     )
     return ok("Profile updated successfully.", updated.model_dump())
+
+
+@router.get("/profile/export")
+def export_my_data(current: CurrentParticipant, db: DbSession):
+    """The participant's own data (profile, apps without keys, queries, call history) as JSON."""
+    return ok("Your data.", participant_data_export_service.export_participant_data(db, current))
 
 
 @router.get("/profile/completeness")
@@ -91,6 +102,22 @@ async def request_promotion(
     ),
 ):
     details = _parse_promotion_details(extra_data)
+    # File types first (as before), then who may ask (profile, UAT, an open request),
+    # then the key.
+    if certificate:
+        validate_upload(certificate, CERTIFICATE_EXTENSIONS)
+    if document:
+        validate_upload(document, DOCUMENT_EXTENSIONS)
+    participant_service.assert_promotion_possible(db, current.participant, target_environment)
+    if target_environment == Environment.PRODUCTION:
+        # The partner's signing key: from the certificate, or the pasted public key.
+        certificate_bytes = None
+        if certificate:
+            certificate_bytes = await certificate.read()
+            await certificate.seek(0)
+        key = partner_keys.partner_key(certificate_bytes, details.get("public_key"))
+        details["public_key"] = key.public_key
+        details["key"] = key.details()
     certificate_path = (
         (
             await save_upload(
@@ -136,26 +163,36 @@ def promotion_status(current: CurrentParticipant, db: DbSession):
 
 @router.post("/queries")
 def create_query(payload: QueryCreate, current: CurrentParticipant, db: DbSession):
-    query = participant_service.create_query(
-        db,
-        current.participant,
-        payload.subject,
-        payload.description,
-        payload.query_type,
+    query = support_service.create_ticket(
+        db, current, payload.subject, payload.description, payload.query_type
     )
-    return ok(
-        "Your query has been submitted.",
-        QueryOut.model_validate(query).model_dump(),
-    )
+    return ok("Your query has been submitted.", query.model_dump())
 
 
 @router.get("/queries")
 def list_queries(current: CurrentParticipant, db: DbSession):
-    rows = ParticipantQueryRepository(db).list_all(participant_id=current.id)
-    return ok(
-        "Queries loaded.",
-        [QueryOut.model_validate(row).model_dump() for row in rows],
-    )
+    rows = support_service.list_for_participant(db, current.id)
+    return ok("Queries loaded.", [row.model_dump() for row in rows])
+
+
+@router.get("/queries/{query_id}")
+def query_thread(query_id: int, current: CurrentParticipant, db: DbSession):
+    """One ticket with its conversation (staff notes are never included)."""
+    return ok("Ticket loaded.", support_service.participant_thread(db, current.participant, query_id).model_dump())
+
+
+@router.post("/queries/{query_id}/messages")
+def reply_to_query(
+    query_id: int, payload: QueryMessageCreate, current: CurrentParticipant, db: DbSession
+):
+    thread = support_service.participant_reply(db, current, query_id, payload.body)
+    return ok("Your reply has been sent.", thread.model_dump())
+
+
+@router.post("/queries/{query_id}/close")
+def close_query(query_id: int, current: CurrentParticipant, db: DbSession):
+    """The participant marks the ticket resolved."""
+    return ok("Ticket closed.", support_service.participant_close(db, current, query_id).model_dump())
 
 
 def _parse_promotion_details(raw: str | None) -> dict:

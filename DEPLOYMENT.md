@@ -282,6 +282,133 @@ curl -X POST https://<partner host>/farmer-registry/register-data/get_register_s
   the server), shows the token request as its own curl, and puts the token in the
   `X-Partner-Token` header. Code samples show only the API call.
 
+### UAT and production apps; production's own Keycloak and APISIX
+
+**Apps belong to one environment and have their own keys.** Participants create UAT
+apps. Once approved for production, *Move to production* on a UAT app (portal: My Apps)
+makes a production copy - same name, same API products, its own description and IP whitelist -
+that waits for an administrator (the app and each
+product, whatever the product's approval type) and then gets its **own** API key + secret.
+A UAT app's keys work only on UAT, a production app's only on production (token claim
+`oan_environments`; try-it lists only the apps of the chosen environment, and starts in the
+environment chosen in My Apps). A production app's keys stop working when the participant's
+production access is taken away. The console's Apps & Keys filters by environment.
+
+**Production request (account).** The partner sends its signing key: the X.509 certificate
+(PEM / DER) or only its public key; the API refuses private keys, expired certificates,
+RSA under 2048 bits and other curves (accepted: RSA ≥ 2048, EC P-256 / P-384, Ed25519) and a
+pasted key that does not match the certificate. Approving production stores the key as the
+partner's key, published at `/oan/partners/{partner_id}/jwks.json` for Partner Management.
+The web app's CSP allows `frame-src blob:` so the console can preview uploaded PDFs in a dialog.
+
+Each environment (cluster) has its own Keycloak and APISIX. The sandbox stays one portal;
+UAT uses the main settings above, production gets its own. All are optional: **empty =
+production apps use the main Keycloak / gateway** (still with their own keys and a token
+naming only `production`).
+
+| Setting | What it does |
+| --- | --- |
+| `GATEWAY_PROD_URL` (+ `GATEWAY_PROD_PUBLIC_URL`) | Try-it and code samples for PRODUCTION call this proxy (existing setting). |
+| `GATEWAY_PROD_ADMIN_URL`, `GATEWAY_PROD_ADMIN_TOKEN` (Secret) | Production's Admin API (viewer key in oauth mode). Production apps' route ids are read from it; apikey / keycloak modes write production apps' consumers there. "Pull from gateway" gets a UAT / Production choice. |
+| `KEYCLOAK_PROD_URL`, `KEYCLOAK_PROD_PUBLIC_URL` | Production's Keycloak (oauth mode): production apps' clients, and their "Get token". |
+| `KEYCLOAK_PROD_REALM`, `KEYCLOAK_PROD_ADMIN_CLIENT_ID` | Empty = `KEYCLOAK_REALM` / `KEYCLOAK_ADMIN_CLIENT_ID`. |
+| `KEYCLOAK_PROD_ADMIN_CLIENT_SECRET` (Secret) | Production's `oan-sandbox-provisioner` secret; required when `KEYCLOAK_PROD_URL` is set. |
+| `KEYCLOAK_PROD_JWKS_URL` | Empty = `{KEYCLOAK_PROD_URL}/realms/{realm}/protocol/openid-connect/certs`. |
+
+Participant users and the portal sign-in stay on the main Keycloak. Production apps
+approved before production's own Keycloak / gateway was configured move there at their
+next sync (any change, or *Re-sync gateway* in the console); their old clients / consumer
+on the main ones are removed.
+
+Production setup (DevOps):
+
+1. Production Keycloak: `setup_partner_realm.py --url https://<prod keycloak> --realm partner`
+   (creates `oan-sandbox-provisioner`); its secret goes into `KEYCLOAK_PROD_ADMIN_CLIENT_SECRET`.
+2. Production APISIX: chart `oan-partner-gateway` with `environmentRole: production`, the
+   production host and TLS, `keycloak.issuer` = production's realm, production upstreams.
+3. The sandbox: `GATEWAY_PROD_URL`, `GATEWAY_PROD_ADMIN_URL` / `_TOKEN`, `KEYCLOAK_PROD_*`; the
+   Admin API needs a certificate the API trusts (or an in-cluster URL).
+
+### App key lifecycle
+
+- **Secret shown once.** Lists never carry a secret. The owner sees it in clear when a key is
+  issued or rotated, or once through *Reveal secret* (the first key is issued at approval, while
+  the owner is away). Afterwards only a new key helps: *Rotate*.
+- **Rotate.** A new key is issued at once; the old one keeps working for
+  `APP_KEY_ROTATION_GRACE_DAYS` (0 = revoked at once), then expires. Needs a free key slot
+  (`MAX_ACTIVE_CREDENTIALS_PER_APP`).
+- **Expiry.** With `APP_KEY_LIFETIME_DAYS` above 0 every new key expires after that time. The API
+  checks every `APP_KEY_MAINTENANCE_MINUTES`: it marks keys past their date *Expired*, removes them
+  from the gateway (and Keycloak), and emails the owner `APP_KEY_EXPIRY_WARN_DAYS` ahead. Run one
+  API replica per database, or accept that two replicas may both send a warning mail.
+- **Emails** (`APP_KEY_ISSUED`, `_ROTATED`, `_REVOKED`, `_EXPIRING`, `_EXPIRED`; editable under
+  console Content) never contain the key or the secret. A database seeded earlier uses the built-in
+  text until the template is saved in the console.
+- Migration `e6f0a4b2c3d8` adds the columns; the entrypoint runs `alembic upgrade head`. Existing keys
+  stay valid; their secret can be revealed once more.
+
+### Request ids, support SLA, retention, data export
+
+- Every response carries `X-Request-Id` (same value as `X-Correlation-Id`). A caller may send either
+  header (up to 64 plain characters); the id is in the access log and the audit trail.
+- `SUPPORT_SLA_HOURS` (72): support queries get a due date; open ones past it show *Overdue* in the
+  console and "we aim to answer by" in the portal. No new column, nothing changes for answered queries.
+- **Support tickets are conversations** (migration `g8b2c6d4e0f3` converts existing tickets: the
+  description becomes the first message, the reply the second). Participant and team write back and
+  forth on the ticket; the team can also add *internal notes* that never reach the participant and send
+  no mail. Status: Open, In progress, Answered (waiting for the participant), Closed. A participant's reply
+  reopens an answered ticket and restarts its SLA clock; a closed ticket takes no replies. Tickets are
+  numbered `TKT-000123` and show *unread* for whoever has not opened the latest message.
+  - `SUPPORT_NOTIFY_EMAIL` (empty): mailbox told when a participant writes (template `QUERY_NEW_MESSAGE`).
+  - `SUPPORT_AUTO_CLOSE_DAYS` (0 = never): answered tickets nobody replied to close by themselves.
+  - `SUPPORT_MAX_MESSAGES_PER_TICKET` (100).
+  - Mails to participants (template `QUERY_RESPONSE`) carry `Message-ID` / `In-Reply-To` / `References`
+    headers and the ticket number, and each message records whether its mail went out
+    (`notified_date`) and its Message-ID (`external_id`). Reading replies *from* mail is not built; the
+    columns `channel` and `external_id` are where it plugs in. Existing databases keep their stored
+    `QUERY_RESPONSE` text; edit it in the console (Content, Email templates) to add `{{ticket_no}}` and
+    `{{ticket_url}}`.
+- `AUDIT_LOG_RETENTION_DAYS` (0 = keep forever): the hourly maintenance run deletes older audit entries.
+  Export what you must keep first (console, User tracking, Export).
+- `GET /oan/participant/profile/export` (portal: Profile, *Download my data*): the account's own profile,
+  apps (key prefixes only), queries, call history and activity as JSON. Deleting an account is a policy
+  decision and is not built.
+
+### Rate-limit headers and usage
+
+With `GATEWAY_RATE_LIMIT_ENABLED`, APISIX (`limit-count`, checked against 3.18 source) adds
+`X-Minute-RateLimit-Limit|Remaining|Reset` and `X-Day-RateLimit-Limit|Remaining|Reset` to each response
+and answers `429` over the limit. It sends no `Retry-After`; partners use the matching `…-Reset`
+(seconds). My Apps shows "Used today X of Y" from the call history (approximate; the gateway counts).
+
+### Helm values for production (oan-helm, to add)
+
+`oan-helm` is a separate repository; its `oan-sandbox` chart needs these, as `config` values and
+Secret keys, next to the existing `config.gateway.*` / `config.keycloak.*` (check the exact names in
+the chart's `values.yaml`):
+
+```yaml
+config:
+  gateway:
+    prodUrl: ""            # GATEWAY_PROD_URL
+    prodPublicUrl: ""      # GATEWAY_PROD_PUBLIC_URL
+    prodAdminUrl: ""       # GATEWAY_PROD_ADMIN_URL
+  keycloak:
+    prodUrl: ""            # KEYCLOAK_PROD_URL
+    prodPublicUrl: ""      # KEYCLOAK_PROD_PUBLIC_URL
+    prodRealm: ""          # KEYCLOAK_PROD_REALM
+    prodAdminClientId: ""  # KEYCLOAK_PROD_ADMIN_CLIENT_ID
+    prodJwksUrl: ""        # KEYCLOAK_PROD_JWKS_URL
+  appKeys:
+    lifetimeDays: 0        # APP_KEY_LIFETIME_DAYS
+    rotationGraceDays: 7   # APP_KEY_ROTATION_GRACE_DAYS
+    expiryWarnDays: 14     # APP_KEY_EXPIRY_WARN_DAYS
+    maintenanceMinutes: 60 # APP_KEY_MAINTENANCE_MINUTES
+# Secret (same Secret as DB_PASSWORD, ...): GATEWAY_PROD_ADMIN_TOKEN, KEYCLOAK_PROD_ADMIN_CLIENT_SECRET
+```
+
+Empty production values keep today's behaviour (production apps use the main Keycloak / gateway).
+
 ### Kubernetes (dev)
 
 The dev deployment is the Helm chart `oan-sandbox` in

@@ -55,7 +55,7 @@ export default function MastersPage() {
   });
 
   function invalidate() {
-    queryClient.invalidateQueries({ queryKey: ["admin", "lookups", kind] });
+    void queryClient.invalidateQueries({ queryKey: ["admin", "lookups", kind] });
   }
 
   const save = useMutation({

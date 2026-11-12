@@ -19,18 +19,15 @@ from app.core.security import hash_password
 from app.models.enums import ActivationStatus, ApprovalStatus, Environment
 from app.models.participant import Participant
 from app.repositories.participant_repository import (
-    ParticipantQueryRepository,
     ParticipantRepository,
     ParticipantRequestRepository,
     ParticipantTokenRepository,
 )
 from app.schemas.participant import (
     AdminParticipantDetail,
-    AdminQueryOut,
     ParticipantListQuery,
     ParticipantOut,
     PromotionRequestOut,
-    QueryListQuery,
 )
 from app.services import app_gateway_service, audit_service, iam_user_service
 from app.services.audit_service import Action
@@ -111,6 +108,12 @@ def approve_environment(
     now = datetime.now(UTC)
 
     if environment == Environment.PRODUCTION:
+        # The signing key the request carried becomes the partner's key (its JWKS).
+        request = ParticipantRequestRepository(db).latest_for(participant_id, environment)
+        if request is not None and request.status == int(ApprovalStatus.PENDING):
+            key = (request.extra_data or {}).get("public_key")
+            if key and "BEGIN PUBLIC KEY" in key:
+                participant.public_key = key
         participant.is_prod_approved = True
         participant.is_prod_enabled = True
         participant.is_prod_rejected = False
@@ -314,6 +317,13 @@ def reset_participant_password(
 
 
 # ------------------------------------------------------- environment promotion
+def assert_promotion_possible(db: Session, participant: Participant, environment: Environment) -> None:
+    """Raise when the participant cannot ask for ``environment`` now (open request, profile, UAT)."""
+    if ParticipantRequestRepository(db).has_open_request(participant.participant_id, environment):
+        raise ConflictError(f"A {environment} request is already under review.")
+    _assert_promotion_allowed(participant, environment)
+
+
 def request_promotion(
     db: Session,
     participant: Participant,
@@ -323,13 +333,8 @@ def request_promotion(
     certificate_path: str | None = None,
     document_path: str | None = None,
 ):
-    requests = ParticipantRequestRepository(db)
-    if requests.has_open_request(participant.participant_id, environment):
-        raise ConflictError(f"A {environment} request is already under review.")
-
-    _assert_promotion_allowed(participant, environment)
-
-    request = requests.create(
+    assert_promotion_possible(db, participant, environment)
+    request = ParticipantRequestRepository(db).create(
         participant_id=participant.participant_id,
         target_environment=str(environment),
         status=int(ApprovalStatus.PENDING),
@@ -369,83 +374,6 @@ def export_participants(
     page = list_users(db, query)
     rows = [row.model_dump() for row in page.rows]
     return exporters.export(rows, exporters.PARTICIPANT_COLUMNS, fmt, "Users")
-
-
-# ----------------------------------------------------------------- queries
-def list_queries(db: Session, query: QueryListQuery) -> Page:
-    """Console list of support queries, each with the participant who raised it."""
-    repo = ParticipantQueryRepository(db)
-    page = repo.paginate(
-        page=query.page,
-        limit=query.limit,
-        sort_by=query.sort_by,
-        sort_dir=query.sort_dir,
-        stmt=repo.search_stmt(query.search),
-        status=query.status,
-        query_type=query.query_type,
-    )
-    # One lookup for the whole page rather than one per row.
-    ids = {row.participant_id for row in page.rows if row.participant_id}
-    participants = {p.participant_id: p for p in ParticipantRepository(db).get_many(ids)}
-    rows = []
-    for row in page.rows:
-        participant = participants.get(row.participant_id)
-        rows.append(
-            AdminQueryOut.model_validate(row).model_copy(
-                update={
-                    "participant_name": participant.full_name if participant else None,
-                    "email_id": participant.email_id if participant else None,
-                    "company_name": participant.company_name if participant else None,
-                }
-            )
-        )
-    page.rows = rows
-    return page
-
-
-def create_query(
-    db: Session,
-    participant: Participant,
-    subject: str,
-    description: str,
-    query_type: int | None,
-):
-    return ParticipantQueryRepository(db).create(
-        participant_id=participant.participant_id,
-        query_type=query_type,
-        subject=subject,
-        description=description,
-        added_by=participant.participant_id,
-    )
-
-
-def respond_to_query(
-    db: Session, admin: AdminPrincipal, query_id: int, response: str, status: int
-):
-    repo = ParticipantQueryRepository(db)
-    query = repo.get(query_id)
-    if query is None:
-        raise NotFoundError("Query not found.")
-
-    query.response = response
-    query.status = status
-    query.responded_by = admin.id
-    query.responded_date = datetime.now(UTC)
-    db.commit()
-
-    participant = ParticipantRepository(db).get(query.participant_id)
-    if participant is not None and participant.email_id:
-        send_templated(
-            db,
-            TemplateCode.QUERY_RESPONSE,
-            participant.email_id,
-            {
-                "name": participant.display_name,
-                "subject": query.subject,
-                "response": response,
-            },
-        )
-    return query
 
 
 # ------------------------------------------------------------------ helpers

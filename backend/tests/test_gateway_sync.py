@@ -154,7 +154,8 @@ def test_status_reports_the_configuration(client, admin_headers, monkeypatch):
     monkeypatch.setattr(settings, "GATEWAY_TYPE", "kong")
     monkeypatch.setattr(settings, "GATEWAY_ADMIN_URL", "")
     data = client.get("/oan/admin/gateway/status", headers=admin_headers).json()["data"]
-    assert data == {"enabled": True, "gateway_type": "kong", "admin_url_configured": False}
+    assert data == {"enabled": True, "gateway_type": "kong", "admin_url_configured": False,
+                    "environments": ["UAT"]}
 
 
 def test_sync_is_refused_when_disabled(client, admin_headers, monkeypatch):

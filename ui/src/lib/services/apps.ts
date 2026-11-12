@@ -24,7 +24,6 @@ const ADMIN = { audience: "admin" as const };
 export interface AppPayload {
   name: string;
   description?: string | null;
-  callback_url?: string | null;
   allowed_ips?: string[];
 }
 
@@ -52,14 +51,30 @@ export const appsApi = {
 
   issueKey: (appId: string) => api.post<IssuedCredential>(`/participant/apps/${appId}/credentials`, undefined, PORTAL),
 
+  /** Rotation: a new key now; the old one keeps working for the grace period, then expires. */
+  rotateKey: (appId: string, credentialId: string) =>
+    api.post<IssuedCredential>(`/participant/apps/${appId}/credentials/${credentialId}/rotate`, undefined, PORTAL),
+
+  /** The key's secret in clear - once. A second call is refused (rotate for a new one). */
+  revealSecret: (appId: string, credentialId: string) =>
+    api.post<IssuedCredential>(`/participant/apps/${appId}/credentials/${credentialId}/reveal`, undefined, PORTAL),
+
   revokeKey: (appId: string, credentialId: string) =>
     api.delete<ParticipantApp>(`/participant/apps/${appId}/credentials/${credentialId}`, PORTAL),
 
   /** How the gateway identifies callers (API key, partner token or app token). */
   gatewayAuth: () => api.get<GatewayAuth>("/participant/gateway-auth", PORTAL),
 
-  /** The app's access token: the sandbox makes the client-credentials request (secret stays server-side). */
+  /** The app's access token: the sandbox makes the client-credentials request (secret stays server-side).
+   * It comes from the Keycloak of the app's environment. */
   token: (appId: string) => api.post<AppToken>(`/participant/apps/${appId}/token`, undefined, PORTAL),
+
+  /** "Move to production": a production copy of a UAT app, with its own key once approved.
+   * The body gives production's own description and IP whitelist. */
+  promote: (
+    appId: string,
+    payload?: { description?: string | null; allowed_ips?: string[] },
+  ) => api.post<AppCreated>(`/participant/apps/${appId}/promote`, payload, PORTAL),
 };
 
 // ----------------------------------------------------------------- console

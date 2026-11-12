@@ -8,6 +8,7 @@ needs a complete profile.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -367,10 +368,12 @@ def test_completing_the_profile_unlocks_the_production_request(
     assert response.status_code == 200, response.text
     assert response.json()["data"]["is_profile_complete"] is True
 
+    from tests.keys import RSA_KEY, public_pem
+
     promotion = client.post(
         "/oan/participant/promotion-requests",
         headers=participant_headers,
-        data={"target_environment": "PRODUCTION"},
+        data={"target_environment": "PRODUCTION", "extra_data": json.dumps({"public_key": public_pem(RSA_KEY)})},
     )
     assert promotion.status_code == 200, promotion.text
 

@@ -46,7 +46,9 @@ INVALID_CREDENTIALS = "Invalid email or password."
 SESSION_INVALID = "Session is expired or invalid."
 
 _jwks_lock = threading.Lock()
-_jwks: dict[str, Any] = {"client": None, "url": None}
+# One key-set client per realm (certs URL): the main realm and, for production app
+# tokens, production's own.
+_jwks: dict[str, jwt.PyJWKClient] = {}
 
 
 @dataclass(slots=True)
@@ -100,7 +102,10 @@ def revoke_refresh_token(refresh_token: str) -> None:
 def verify_access_token(token: str) -> dict[str, Any]:
     """The claims of a valid Keycloak access token of the login client, or 401."""
     try:
-        header = jwt.get_unverified_header(token)
+        # Only the header (kid, alg) is read here, to pick the realm key and to turn
+        # away malformed tokens before a JWKS fetch; jwt.decode below verifies the
+        # signature with that key.
+        header = jwt.get_unverified_header(token)  # NOSONAR
     except jwt.InvalidTokenError as exc:
         raise UnauthorizedError("Unauthorized! Invalid access token.") from exc
     if header.get("alg") not in ALGORITHMS or not header.get("kid"):
@@ -111,7 +116,7 @@ def verify_access_token(token: str) -> dict[str, Any]:
             token,
             key,
             algorithms=ALGORITHMS,
-            issuer=settings.keycloak_issuer,
+            issuer=settings.keycloak_token_issuer,
             leeway=settings.KEYCLOAK_TOKEN_LEEWAY_SECONDS,
             options={"require": ["exp", "iat", "iss", "sub", "jti"], "verify_aud": False},
         )
@@ -131,6 +136,27 @@ def verify_access_token(token: str) -> dict[str, Any]:
     return claims
 
 
+def app_token_claims(token: str) -> dict[str, Any]:
+    """The claims of an app's access token (GATEWAY_PARTNER_AUTH=oauth), signature checked.
+
+    The portal shows them after "Get token". The token is verified with the realm's
+    keys (signature, ``exp``) before anything is read from it; one that fails is
+    not shown (empty claims) rather than failing the token request.
+    """
+    try:
+        claims = jwt.decode(
+            token,
+            _signing_key(token),
+            algorithms=ALGORITHMS,
+            leeway=settings.KEYCLOAK_TOKEN_LEEWAY_SECONDS,
+            options={"require": ["exp"], "verify_aud": False},
+        )
+    except (AppError, jwt.InvalidTokenError) as exc:
+        logger.warning("App access token could not be verified: %s", exc)
+        return {}
+    return claims if isinstance(claims, dict) else {}
+
+
 def _signing_key(token: str):
     client = _jwks_client()
     try:
@@ -143,17 +169,17 @@ def _signing_key(token: str):
 
 
 def _jwks_client() -> jwt.PyJWKClient:
-    url = settings.keycloak_jwks_url
+    """The signing keys of the current realm (``keycloak.use_realm``; the main one by default)."""
+    url = keycloak.current_realm().certs_url
     with _jwks_lock:
-        if _jwks["client"] is None or _jwks["url"] != url:
-            _jwks["client"] = jwt.PyJWKClient(
+        if url not in _jwks:
+            _jwks[url] = jwt.PyJWKClient(
                 url,
                 cache_keys=True,
                 lifespan=settings.KEYCLOAK_JWKS_CACHE_SECONDS,
                 timeout=settings.KEYCLOAK_TIMEOUT,
             )
-            _jwks["url"] = url
-        return _jwks["client"]
+        return _jwks[url]
 
 
 # ------------------------------------------------------------------ helpers
@@ -213,6 +239,5 @@ def _json(response: httpx.Response) -> dict[str, Any]:
 def reset_cache() -> None:
     """Forget the cached signing keys (tests, key rotation)."""
     with _jwks_lock:
-        _jwks["client"] = None
-        _jwks["url"] = None
+        _jwks.clear()
 

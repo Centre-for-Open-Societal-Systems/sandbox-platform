@@ -71,7 +71,7 @@ export default function GeographyPage() {
   });
 
   function invalidate() {
-    queryClient.invalidateQueries({ queryKey: ["admin", "areas"] });
+    void queryClient.invalidateQueries({ queryKey: ["admin", "areas"] });
   }
 
   const save = useMutation({

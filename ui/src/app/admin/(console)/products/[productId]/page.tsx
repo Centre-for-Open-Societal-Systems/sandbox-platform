@@ -94,8 +94,8 @@ export default function ProductDetailsPage() {
   });
 
   function invalidate() {
-    queryClient.invalidateQueries({ queryKey: ["admin", "product", productId] });
-    queryClient.invalidateQueries({ queryKey: ["admin", "products"] });
+    void queryClient.invalidateQueries({ queryKey: ["admin", "product", productId] });
+    void queryClient.invalidateQueries({ queryKey: ["admin", "products"] });
   }
 
   const save = useMutation({

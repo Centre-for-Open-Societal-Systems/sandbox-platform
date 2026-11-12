@@ -81,7 +81,7 @@ def sync_pm(participant: Participant, row: ParticipantIamUser, active: bool) -> 
                     f"OAN sandbox participant {participant.unique_id} ({participant.email_id}), "
                     "onboarded when its access was approved."
                 ),
-                policies=settings.pm_default_policies,
+                policies=settings.pm_default_policy_list,
             )
             pm.approve(request["id"], "Approved in the OAN sandbox.")
             status = IamUserStatus.ACTIVE

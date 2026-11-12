@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Select, func, or_, select
+from datetime import UTC, datetime
+
+from sqlalchemy import Select, and_, func, or_, select
 
 from app.models.app import (
     ApiProduct,
@@ -143,6 +145,7 @@ class ParticipantAppRepository(BaseRepository[ParticipantApp]):
         api_product_id: int | None = None,
         pending_only: bool = False,
         country_code: str | None = None,
+        environment: str | None = None,
     ) -> Select:
         stmt = self.base_stmt().join(
             Participant, Participant.participant_id == ParticipantApp.participant_id
@@ -151,6 +154,8 @@ class ParticipantAppRepository(BaseRepository[ParticipantApp]):
             stmt = stmt.where(ParticipantApp.status == status)
         if participant_id is not None:
             stmt = stmt.where(ParticipantApp.participant_id == participant_id)
+        if environment:
+            stmt = stmt.where(ParticipantApp.environment == str(environment).upper())
         if country_code:
             stmt = stmt.where(Participant.country_code == country_code)
         if api_product_id is not None:
@@ -199,12 +204,43 @@ class AppCredentialRepository(BaseRepository[ParticipantAppCredential]):
     pk_name = "credential_id"
     default_sort = "issued_date"
 
+    @staticmethod
+    def _live(now: datetime):
+        """Active and not past its expiry: the keys that still work."""
+        return and_(
+            ParticipantAppCredential.status == int(CredentialStatus.ACTIVE),
+            or_(ParticipantAppCredential.expires_date.is_(None), ParticipantAppCredential.expires_date > now),
+        )
+
     def for_app(self, app_id: int, active_only: bool = False) -> list[ParticipantAppCredential]:
         stmt = select(ParticipantAppCredential).where(ParticipantAppCredential.app_id == app_id)
         if active_only:
-            stmt = stmt.where(ParticipantAppCredential.status == int(CredentialStatus.ACTIVE))
-        stmt = stmt.order_by(ParticipantAppCredential.issued_date.desc())
+            stmt = stmt.where(self._live(datetime.now(UTC)))
+        # The newest key first (the one try-it uses), not the one about to expire.
+        stmt = stmt.order_by(ParticipantAppCredential.issued_date.desc(), ParticipantAppCredential.credential_id.desc())
         return list(self.db.execute(stmt).scalars())
 
     def active_count(self, app_id: int) -> int:
-        return self.count(app_id=app_id, status=int(CredentialStatus.ACTIVE))
+        stmt = select(func.count()).select_from(ParticipantAppCredential).where(
+            ParticipantAppCredential.app_id == app_id, self._live(datetime.now(UTC))
+        )
+        return int(self.db.execute(stmt).scalar() or 0)
+
+    def past_expiry(self, now: datetime) -> list[ParticipantAppCredential]:
+        """Still marked active although ``expires_date`` has passed."""
+        stmt = select(ParticipantAppCredential).where(
+            ParticipantAppCredential.status == int(CredentialStatus.ACTIVE),
+            ParticipantAppCredential.expires_date.is_not(None),
+            ParticipantAppCredential.expires_date <= now,
+        )
+        return list(self.db.execute(stmt).scalars())
+
+    def expiring_before(self, now: datetime, horizon: datetime) -> list[ParticipantAppCredential]:
+        """Live keys that expire before ``horizon`` and have not been warned about yet."""
+        stmt = select(ParticipantAppCredential).where(
+            self._live(now),
+            ParticipantAppCredential.expires_date.is_not(None),
+            ParticipantAppCredential.expires_date <= horizon,
+            ParticipantAppCredential.expiry_notified_date.is_(None),
+        )
+        return list(self.db.execute(stmt).scalars())

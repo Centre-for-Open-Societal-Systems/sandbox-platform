@@ -64,6 +64,18 @@ class UpstreamError(AppError):
     message = "Upstream service is unavailable."
 
 
+#: Prefixes pydantic puts before a validator's own message ("Value error, Trade licence
+#: number format is not valid."); the user sees only the message.
+_PYDANTIC_PREFIXES = ("Value error, ", "Assertion failed, ")
+
+
+def _readable(message: str) -> str:
+    for prefix in _PYDANTIC_PREFIXES:
+        if message.startswith(prefix):
+            return message[len(prefix):]
+    return message
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def _app_error(_: Request, exc: AppError):
@@ -74,7 +86,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         details = [
             {
                 "field": ".".join(str(p) for p in err.get("loc", []) if p != "body"),
-                "message": err.get("msg", ""),
+                "message": _readable(err.get("msg", "")),
             }
             for err in exc.errors()
         ]

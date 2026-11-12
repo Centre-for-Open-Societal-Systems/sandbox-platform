@@ -105,6 +105,8 @@ class SubscriptionStatus(IntEnum):
 class CredentialStatus(IntEnum):
     ACTIVE = 1
     REVOKED = 2
+    #: Ran past ``expires_date`` (set by the maintenance sweep; never usable again).
+    EXPIRED = 3
 
 
 class GatewaySyncStatus(StrEnum):

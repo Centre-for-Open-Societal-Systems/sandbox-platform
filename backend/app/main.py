@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -24,8 +25,43 @@ async def lifespan(_: FastAPI):
     configure_logging()
     logger.info("Starting %s (%s)", settings.APP_NAME, settings.ENV)
     _sync_permission_catalogue()
+    maintenance = (
+        asyncio.create_task(_key_maintenance_loop()) if settings.APP_KEY_MAINTENANCE_MINUTES > 0 else None
+    )
     yield
+    if maintenance is not None:
+        maintenance.cancel()
     logger.info("Shutting down %s", settings.APP_NAME)
+
+
+def _run_key_maintenance() -> None:
+    from app.services import app_service
+
+    db = SessionLocal()
+    try:
+        result = app_service.run_key_maintenance(db)
+        if result["expired"] or result["warned"]:
+            logger.info("Key maintenance: %(expired)d expired, %(warned)d warned.", result)
+        from app.services import log_service, support_service
+
+        closed = support_service.close_stale_tickets(db)
+        if closed:
+            logger.info("Support: %d answered tickets closed after no reply.", closed)
+        purged = log_service.purge_old_audit_logs(db)
+        if purged:
+            logger.info("Audit retention: %d old entries deleted.", purged)
+    except Exception as exc:
+        logger.error("Key maintenance failed: %s", exc)
+        db.rollback()
+    finally:
+        db.close()
+
+
+async def _key_maintenance_loop() -> None:
+    """Expire old app keys and warn their owners, every APP_KEY_MAINTENANCE_MINUTES."""
+    while True:
+        await asyncio.to_thread(_run_key_maintenance)
+        await asyncio.sleep(settings.APP_KEY_MAINTENANCE_MINUTES * 60)
 
 
 def _sync_permission_catalogue() -> None:

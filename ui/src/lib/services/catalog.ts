@@ -71,9 +71,10 @@ export const catalogApi = {
 
   gatewayStatus: () => api.get<GatewayStatus>("/admin/gateway/status", ADMIN),
 
-  /** Pull routes from the API gateway; ``dryRun`` only reports what would change. */
-  gatewaySync: (dryRun: boolean) =>
-    api.post<GatewaySyncReport>("/admin/gateway/sync", { dry_run: dryRun }, ADMIN),
+  /** Pull routes from the API gateway; ``dryRun`` only reports what would change.
+   * ``environment`` PRODUCTION reads production's own gateway (when it has one). */
+  gatewaySync: (dryRun: boolean, environment: "UAT" | "PRODUCTION" = "UAT") =>
+    api.post<GatewaySyncReport>("/admin/gateway/sync", { dry_run: dryRun, environment }, ADMIN),
 
   listEndpoints: async (query: ListQuery) => {
     const page = await api.post<PagedRows<Endpoint>>("/admin/endpoints/list", query, ADMIN);
@@ -112,6 +113,19 @@ export const catalogApi = {
   publicProducts: () => api.get<Product[]>("/catalog/products"),
 
   publicProduct: (productId: number) => api.get<ProductDetail>(`/catalog/products/${productId}`),
+
+  /** OpenAPI 3.0 contract of a product (JSON). No keys inside. */
+  exportProduct: (
+    productId: number,
+    audience: "public" | "participant",
+    environment?: string,
+  ) =>
+    audience === "participant"
+      ? api.get<Record<string, unknown>>(`/participant/catalog/products/${productId}/openapi`, {
+          ...PORTAL,
+          query: { environment },
+        })
+      : api.get<Record<string, unknown>>(`/catalog/products/${productId}/openapi`),
 
   // ------------------------------------------------------------ portal
   portalProducts: () => api.get<Product[]>("/participant/catalog/products", PORTAL),

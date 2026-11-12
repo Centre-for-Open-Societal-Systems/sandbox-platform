@@ -11,15 +11,19 @@ import time
 
 import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from app.config.settings import settings
-from app.integrations import keycloak
+from app.integrations import keycloak, keycloak_oidc
 from app.models.participant import Participant
 from app.utils import schema_tools
 from tests import test_apps
 from tests.test_apps import FakeGateway, _api_product, _create_app, _routes
 
 HEADER = "X-Partner-Token"
+# The realm key app tokens are signed with (Keycloak signs RS256).
+REALM_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+REALM_KID = "realm-key-1"
 farmer_endpoints = test_apps.farmer_endpoints  # fixture
 
 
@@ -35,7 +39,15 @@ class FakeKeycloakClients:
         monkeypatch.setattr(keycloak, "upsert_app_client", self.upsert)
         monkeypatch.setattr(keycloak, "delete_app_client", lambda client_id: self.clients.pop(client_id, None))
         monkeypatch.setattr(keycloak, "request_app_token", self.token)
+        monkeypatch.setattr(keycloak_oidc, "_jwks_client", lambda: self)
         return self
+
+    # --- the realm JWKS (stands in for PyJWKClient)
+    def get_signing_key_from_jwt(self, token):
+        if jwt.get_unverified_header(token).get("kid") != REALM_KID:
+            raise jwt.PyJWKClientError("Unable to find a signing key that matches")
+        return jwt.PyJWK.from_dict({**jwt.algorithms.RSAAlgorithm.to_jwk(REALM_KEY.public_key(), as_dict=True),
+                                    "kid": REALM_KID, "alg": "RS256"})
 
     def upsert(self, client_id, secret, app_uid, description, claims):
         self.clients[client_id] = {"secret": secret, "app_uid": app_uid, "claims": claims}
@@ -46,7 +58,7 @@ class FakeKeycloakClients:
         now = int(time.time())
         claims = {"iss": "http://kc/realms/partner", "azp": client_id, "iat": now, "exp": now + 300,
                   "sub": "service-account", **self.clients[client_id]["claims"]}
-        return {"access_token": jwt.encode(claims, "test-signing-key-of-32-bytes-or-more!", algorithm="HS256"),
+        return {"access_token": jwt.encode(claims, REALM_KEY, algorithm="RS256", headers={"kid": REALM_KID}),
                 "token_type": "Bearer", "expires_in": 300}
 
 
@@ -209,3 +221,33 @@ def test_php_sample_sends_the_headers():
 def test_oauth_mode_needs_keycloak_and_app_sync():
     with pytest.raises(ValueError, match="GATEWAY_PARTNER_AUTH=oauth needs"):
         type(settings)(GATEWAY_PARTNER_AUTH="oauth", KEYCLOAK_PROVISIONING_ENABLED=False)
+
+
+def test_app_token_claims_are_shown_only_when_the_signature_checks(kc):
+    now = int(time.time())
+    claims = {"iss": "http://kc/realms/partner", "exp": now + 300, "oan_app": "a1"}
+    signed = jwt.encode(claims, REALM_KEY, algorithm="RS256", headers={"kid": REALM_KID})
+    assert keycloak_oidc.app_token_claims(signed)["oan_app"] == "a1"
+
+    other_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    forged = jwt.encode(claims, other_key, algorithm="RS256", headers={"kid": REALM_KID})
+    assert keycloak_oidc.app_token_claims(forged) == {}
+    unsigned = jwt.encode(claims, "shared-secret-of-32-bytes-or-more!!", algorithm="HS256",
+                          headers={"kid": REALM_KID})
+    assert keycloak_oidc.app_token_claims(unsigned) == {}
+    expired = jwt.encode({**claims, "exp": now - 3600}, REALM_KEY, algorithm="RS256", headers={"kid": REALM_KID})
+    assert keycloak_oidc.app_token_claims(expired) == {}
+    assert keycloak_oidc.app_token_claims("not-a-token") == {}
+
+
+def test_app_tokens_are_checked_against_the_realm_certs_url(monkeypatch):
+    monkeypatch.setattr(settings, "KEYCLOAK_URL", "http://keycloak.internal:8080")
+    monkeypatch.setattr(settings, "KEYCLOAK_REALM", "partner")
+    monkeypatch.setattr(settings, "KEYCLOAK_JWKS_URL", "")
+    keycloak_oidc.reset_cache()
+    try:
+        client = keycloak_oidc._jwks_client()
+        assert client.uri == "http://keycloak.internal:8080/realms/partner/protocol/openid-connect/certs"
+        assert keycloak_oidc._jwks_client() is client  # cached while the URL stays the same
+    finally:
+        keycloak_oidc.reset_cache()

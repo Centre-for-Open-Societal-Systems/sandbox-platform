@@ -4,7 +4,7 @@ import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ban, Check, RefreshCw, RotateCcw, X } from "lucide-react";
 
-import { AppStatusBadge, GatewayBadge, SubscriptionBadge, limitText } from "@/components/apps/app-ui";
+import { AppStatusBadge, EnvironmentBadge, GatewayBadge, SubscriptionBadge, limitText } from "@/components/apps/app-ui";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DataTable, type Column } from "@/components/ui/data-table";
@@ -90,7 +90,10 @@ export default function AppsPage() {
       sortable: true,
       render: (row) => (
         <div>
-          <p className="font-medium">{row.name}</p>
+          <p className="flex flex-wrap items-center gap-2 font-medium">
+            {row.name}
+            <EnvironmentBadge environment={row.environment} />
+          </p>
           <p className="font-mono text-xs text-subtle">{row.gateway_consumer}</p>
         </div>
       ),
@@ -157,6 +160,17 @@ export default function AppsPage() {
           >
             <option value="">All apps</option>
             <option value="pending">Awaiting a decision (new apps, product requests)</option>
+          </Select>
+        </FilterField>
+        <FilterField label="Environment" htmlFor="apps-environment">
+          <Select
+            id="apps-environment"
+            value={typeof list.filters.environment === "string" ? list.filters.environment : ""}
+            onChange={(event) => list.setFilter("environment", event.target.value || undefined)}
+          >
+            <option value="">UAT and Production</option>
+            <option value="UAT">UAT</option>
+            <option value="PRODUCTION">Production</option>
           </Select>
         </FilterField>
         <FilterField label="Status" htmlFor="apps-status">
@@ -300,7 +314,6 @@ function AppDetailDialog({ appId, onClose, onChanged }: { appId: number; onClose
                   ["Participant", `${app.participant_name ?? ""} <${app.participant_email ?? ""}>`],
                   ["Organisation", app.company_name],
                   ["Environment", app.environment],
-                  ["Callback URL", app.callback_url],
                   ["Allowed IPs", app.allowed_ips.length ? app.allowed_ips.join(", ") : "Any address"],
                   ["Rate limit", limitText(app.rate_limit_per_minute, app.quota_per_day)],
                   ["Gateway consumer", app.gateway_consumer],
@@ -407,7 +420,8 @@ function AppDetailDialog({ appId, onClose, onChanged }: { appId: number; onClose
                       <Badge variant={c.status === 1 ? "success" : "neutral"}>{c.status_label}</Badge>
                       <span className="ml-auto text-xs text-subtle">
                         Issued {formatDateTime(c.issued_date)}
-                        {c.revoked_date ? ` · revoked ${formatDateTime(c.revoked_date)}` : ""}
+                        {c.expires_date ? ` · ${c.status === 1 ? "expires" : "expired"} ${formatDateTime(c.expires_date)}` : ""}
+                        {c.revoked_date ? ` · ${c.status === 3 ? "expired" : "revoked"} ${formatDateTime(c.revoked_date)}` : ""}
                       </span>
                     </li>
                   ))}

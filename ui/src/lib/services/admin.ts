@@ -22,6 +22,7 @@ import type {
   Participant,
   Role,
   SupportQuery,
+  SupportThread,
   UserActionLog,
 } from "@/types/api";
 
@@ -177,6 +178,20 @@ export const adminApi = {
     );
     return { queries: rows<SupportQuery>(page, "queries"), pagination: page.pagination };
   },
+
+  /** The whole conversation, staff notes included; opening it marks it read. */
+  getQuery: (queryId: number) => api.get<SupportThread>(`/admin/participants/queries/${queryId}`, OPTIONS),
+
+  /** A reply (emailed to the participant) or, with ``internal``, a staff-only note. */
+  sendQueryMessage: (queryId: number, body: string, options: { internal?: boolean; status?: number } = {}) =>
+    api.post<SupportThread>(
+      `/admin/participants/queries/${queryId}/messages`,
+      { body, internal: options.internal ?? false, status: options.internal ? undefined : options.status },
+      OPTIONS,
+    ),
+
+  setQueryStatus: (queryId: number, status: number) =>
+    api.post<SupportThread>(`/admin/participants/queries/${queryId}/status`, { status }, OPTIONS),
 
   respondToQuery: (queryId: number, response: string, status = 2) =>
     api.post<null>(

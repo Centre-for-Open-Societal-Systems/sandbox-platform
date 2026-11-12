@@ -9,6 +9,7 @@ import {
   Check,
   CheckCircle2,
   Circle,
+  Download,
   Eye,
   EyeOff,
   FileText,
@@ -32,6 +33,7 @@ import { useToast } from "@/components/ui/toast";
 import { REFERENCE_STALE_MS } from "@/lib/cache-times";
 import { publicApi, participantApi } from "@/lib/services/participant";
 import { participantSession } from "@/lib/session";
+import { downloadJson } from "@/lib/download";
 import { cn, formatDate } from "@/lib/utils";
 import type { Participant } from "@/types/api";
 
@@ -149,6 +151,7 @@ export default function ParticipantProfilePage() {
   const [form, setForm] = React.useState<ProfileForm | null>(null);
   const [passwords, setPasswords] = React.useState({ old_password: "", new_password: "" });
   const [showPasswords, setShowPasswords] = React.useState(false);
+  const [exporting, setExporting] = React.useState(false);
 
   const profileQuery = useQuery({ queryKey: ["participant", "profile"], queryFn: participantApi.profile });
   const networkRoles = useQuery({
@@ -208,7 +211,7 @@ export default function ParticipantProfilePage() {
           : "Profile saved.",
         "success",
       );
-      queryClient.invalidateQueries({ queryKey: ["participant"] });
+      void queryClient.invalidateQueries({ queryKey: ["participant"] });
     },
     onError: (error: Error) => notify(error.message, "error"),
   });
@@ -221,7 +224,7 @@ export default function ParticipantProfilePage() {
     onSuccess: (_result, { environment }) => {
       notify(`${environment} access request submitted for review.`, "success");
       setProductionFormOpen(false);
-      queryClient.invalidateQueries({ queryKey: ["participant"] });
+      void queryClient.invalidateQueries({ queryKey: ["participant"] });
     },
     onError: (error: Error) => notify(error.message, "error"),
   });
@@ -473,6 +476,31 @@ export default function ParticipantProfilePage() {
                 </Button>
               </div>
             </form>
+          </Panel>
+
+          <Panel
+            icon={Download}
+            title="Your data"
+            description="A JSON file with your profile, apps (no keys or secrets), support queries, call history and account activity."
+          >
+            <Button
+              type="button"
+              variant="outline"
+              loading={exporting}
+              onClick={async () => {
+                setExporting(true);
+                try {
+                  downloadJson("my-oan-sandbox-data.json", await participantApi.exportMyData());
+                } catch (error) {
+                  notify(error instanceof Error ? error.message : "Could not export your data.", "error");
+                } finally {
+                  setExporting(false);
+                }
+              }}
+            >
+              <Download className="h-4 w-4" aria-hidden />
+              Download my data
+            </Button>
           </Panel>
         </div>
 

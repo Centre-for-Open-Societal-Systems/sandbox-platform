@@ -16,6 +16,8 @@ os.environ.setdefault("LOG_DIR", tempfile.mkdtemp(prefix="oan-test-logs-"))
 os.environ.setdefault("JWT_ACCESS_TOKEN_KEY", "test-access-secret-0123456789abcdef0123")
 os.environ.setdefault("JWT_REFRESH_TOKEN_KEY", "test-refresh-secret-0123456789abcdef0123")
 os.environ.setdefault("MAIL_ENABLED", "false")
+# No background maintenance thread: it would share the in-memory test database with the test.
+os.environ.setdefault("APP_KEY_MAINTENANCE_MINUTES", "0")
 os.environ.setdefault("LOG_LEVEL", "WARNING")
 # Gateway features start off whatever the developer's .env says; tests switch them on.
 for _name, _value in {

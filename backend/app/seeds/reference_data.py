@@ -240,8 +240,51 @@ EMAIL_TEMPLATE_SEEDS = [
         "App approved",
         "Your app {{app_name}} is approved",
         "<p>Dear {{name}},</p><p>Your app <strong>{{app_name}}</strong> has been "
-        "approved. Its API key and secret are ready under My Apps at {{portal_url}}; "
-        "send the key in the apikey header on every call.</p><p>{{remarks}}</p>",
+        "approved. Its API key is ready under My Apps at {{portal_url}}; open the app "
+        "and choose <em>Reveal secret</em> to see the secret (it is shown once). Send "
+        "the key in the apikey header on every call.</p><p>{{remarks}}</p>",
+    ),
+    (
+        "APP_KEY_ISSUED",
+        "App key issued",
+        "A new API key was issued for {{app_name}}",
+        "<p>Dear {{name}},</p><p>A new API key (<code>{{key_prefix}}…</code>) was issued for "
+        "your app <strong>{{app_name}}</strong>. Its secret is shown once, in the portal. "
+        "If you did not do this, revoke the key under My Apps at {{portal_url}} and contact "
+        "support.</p>",
+    ),
+    (
+        "APP_KEY_ROTATED",
+        "App key rotated",
+        "API key rotated for {{app_name}}",
+        "<p>Dear {{name}},</p><p>The key <code>{{old_key_prefix}}…</code> of your app "
+        "<strong>{{app_name}}</strong> was replaced by <code>{{key_prefix}}…</code>. {{grace}} "
+        "If you did not do this, revoke the new key under My Apps at {{portal_url}} and "
+        "contact support.</p>",
+    ),
+    (
+        "APP_KEY_REVOKED",
+        "App key revoked",
+        "API key revoked for {{app_name}}",
+        "<p>Dear {{name}},</p><p>The key <code>{{key_prefix}}…</code> of your app "
+        "<strong>{{app_name}}</strong> was revoked; calls with it are refused. If you did "
+        "not do this, contact support.</p>",
+    ),
+    (
+        "APP_KEY_EXPIRING",
+        "App key expires soon",
+        "API key for {{app_name}} expires on {{expires}}",
+        "<p>Dear {{name}},</p><p>The key <code>{{key_prefix}}…</code> of your app "
+        "<strong>{{app_name}}</strong> expires on <strong>{{expires}}</strong>. Rotate it "
+        "under My Apps at {{portal_url}} and update your systems before then.</p>",
+    ),
+    (
+        "APP_KEY_EXPIRED",
+        "App key expired",
+        "API key for {{app_name}} expired",
+        "<p>Dear {{name}},</p><p>The key <code>{{key_prefix}}…</code> of your app "
+        "<strong>{{app_name}}</strong> has expired and is refused. Issue or rotate a key "
+        "under My Apps at {{portal_url}}.</p>",
     ),
     (
         "APP_REJECTED",
@@ -270,9 +313,18 @@ EMAIL_TEMPLATE_SEEDS = [
     (
         "QUERY_RESPONSE",
         "Support query response",
-        "Response to your query: {{subject}}",
-        "<p>Dear {{name}},</p><p>Our team has responded to your query:</p>"
-        "<blockquote>{{response}}</blockquote>",
+        "[{{ticket_no}}] Response to your query: {{subject}}",
+        "<p>Dear {{name}},</p><p>Our team has replied to your ticket {{ticket_no}}:</p>"
+        "<blockquote>{{response}}</blockquote>"
+        "<p>Read the whole conversation and reply: {{ticket_url}}</p>",
+    ),
+    (
+        "QUERY_NEW_MESSAGE",
+        "Support ticket: new message from a participant",
+        "[{{ticket_no}}] New message: {{subject}}",
+        "<p>{{participant_name}} wrote on ticket {{ticket_no}} ({{subject}}):</p>"
+        "<blockquote>{{message}}</blockquote>"
+        "<p>Open it in the console under Support Tickets.</p>",
     ),
 ]
 

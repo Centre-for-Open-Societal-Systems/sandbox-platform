@@ -241,8 +241,26 @@ export interface PromotionRequest {
   reviewed_date: string | null;
 }
 
+/** The signing key read from a production request (certificate or pasted public key). */
+export interface PartnerKeyInfo {
+  algorithm: string;
+  fingerprint_sha256: string;
+  source: "certificate" | "public_key";
+  certificate: {
+    subject: string;
+    common_name: string | null;
+    issuer: string;
+    serial_number: string;
+    not_before: string;
+    not_after: string;
+    self_signed: boolean;
+  } | null;
+}
+
 export interface PromotionDetails {
   public_key?: string;
+  /** Read by the server from the certificate / public key. */
+  key?: PartnerKeyInfo;
   endpoint_ids?: number[];
   daily_volume?: number;
   integration_contact?: string;
@@ -265,10 +283,44 @@ export interface SupportQuery {
   response: string | null;
   added_date: string | null;
   responded_date: string | null;
+  /** When an answer is due (SUPPORT_SLA_HOURS after it was raised); null without an SLA. */
+  due_date?: string | null;
+  /** Still open or in progress past its due date. */
+  is_overdue?: boolean;
   /** Console list only: who raised the query. */
   participant_name?: string | null;
   email_id?: string | null;
   company_name?: string | null;
+  /** Reference quoted by the participant and in mails, e.g. TKT-000123. */
+  ticket_no?: string;
+  /** When the participant last wrote and no one has answered yet (the SLA clock). */
+  awaiting_since?: string | null;
+  last_message_date?: string | null;
+  /** Who wrote last: participant or admin. */
+  last_message_by?: "participant" | "admin" | null;
+  closed_date?: string | null;
+  message_count?: number;
+  /** The other side wrote after you last opened the ticket. */
+  unread?: boolean;
+}
+
+export interface SupportMessage {
+  message_id: number;
+  /** participant, admin, or system (a status event). */
+  author_type: "participant" | "admin" | "system";
+  author_name: string | null;
+  body: string;
+  /** Staff-only note (console only). */
+  is_internal: boolean;
+  channel: string;
+  /** When the mail for this message went out; null = no mail. */
+  notified_date: string | null;
+  added_date: string | null;
+}
+
+/** A ticket with its conversation, oldest message first. */
+export interface SupportThread extends SupportQuery {
+  messages: SupportMessage[];
 }
 
 // ---------------------------------------------------------------- catalog
@@ -388,6 +440,8 @@ export interface GatewayStatus {
   enabled: boolean;
   gateway_type: "apisix" | "kong";
   admin_url_configured: boolean;
+  /** Gateways the console can pull from: UAT, plus PRODUCTION when it has its own. */
+  environments?: ("UAT" | "PRODUCTION")[];
 }
 
 export interface GatewaySyncRow {
@@ -402,6 +456,8 @@ export interface GatewaySyncRow {
 /** POST /admin/gateway/sync. Lists are capped; the *_count fields are complete. */
 export interface GatewaySyncReport {
   gateway_type: "apisix" | "kong";
+  /** Which gateway was read. */
+  environment?: "UAT" | "PRODUCTION";
   dry_run: boolean;
   services: number;
   routes: number;
@@ -736,16 +792,20 @@ export interface AppCredential {
   credential_id: string;
   /** Full key for the app's owner; null for administrators and revoked keys. */
   api_key: string | null;
-  /** Secret for the app's owner (masked in the UI until revealed); null for administrators and revoked keys. */
+  /** The secret is in clear only when a key is issued, rotated or revealed (once); null in lists. */
   api_secret: string | null;
   api_key_prefix: string;
   api_secret_hint: string;
-  /** 1 active, 2 revoked. */
+  /** 1 active, 2 revoked, 3 expired. */
   status: number;
   status_label: string;
   issued_date: string | null;
   revoked_date: string | null;
   last_used_date: string | null;
+  /** The key stops working then (null = never). */
+  expires_date: string | null;
+  /** The secret was already shown; rotate the key to get a new one. */
+  secret_viewed: boolean;
 }
 
 /** Returned when the owner issues a new key: key and secret in clear. */
@@ -783,7 +843,6 @@ export interface ParticipantApp {
   app_id: string;
   name: string;
   description: string | null;
-  callback_url: string | null;
   environment: string;
   /** 0 awaiting approval (no key yet), 1 active, 2 revoked, 3 rejected by an administrator. */
   status: number;
@@ -795,6 +854,9 @@ export interface ParticipantApp {
   /** Limits the gateway applies (null = none, or limits switched off). */
   rate_limit_per_minute: number | null;
   quota_per_day: number | null;
+  /** Calls logged in the last minute / 24 hours when that limit is set (approximate). */
+  calls_last_minute: number | null;
+  calls_today: number | null;
   gateway_consumer: string | null;
   gateway_status: GatewaySyncStatus;
   gateway_error: string | null;

@@ -33,9 +33,15 @@ class TemplateCode:
     PROMOTION_REJECTED = "PROMOTION_REJECTED"
     APP_APPROVED = "APP_APPROVED"
     APP_REJECTED = "APP_REJECTED"
+    APP_KEY_ISSUED = "APP_KEY_ISSUED"
+    APP_KEY_ROTATED = "APP_KEY_ROTATED"
+    APP_KEY_REVOKED = "APP_KEY_REVOKED"
+    APP_KEY_EXPIRING = "APP_KEY_EXPIRING"
+    APP_KEY_EXPIRED = "APP_KEY_EXPIRED"
     ADMIN_INVITE = "ADMIN_INVITE"
     ADMIN_RESET_PASSWORD = "ADMIN_RESET_PASSWORD"
     QUERY_RESPONSE = "QUERY_RESPONSE"
+    QUERY_NEW_MESSAGE = "QUERY_NEW_MESSAGE"
 
 
 def send_email(
@@ -43,8 +49,13 @@ def send_email(
     subject: str,
     body_html: str,
     from_email: str | None = None,
+    headers: dict[str, str] | None = None,
 ) -> bool:
-    """Send one message. Returns True when it actually left the process."""
+    """Send one message. Returns True when it actually left the process.
+
+    ``headers`` are extra mail headers (Message-ID, In-Reply-To, References...): the
+    support tickets use them so a mail client threads a ticket's mails together.
+    """
     if not to_email:
         logger.warning("send_email called with no recipient; skipping.")
         return False
@@ -58,6 +69,8 @@ def send_email(
     message["From"] = from_email or settings.SMTP_FROM
     message["To"] = to_email
     message["Subject"] = subject
+    for name, value in (headers or {}).items():
+        message[name] = value
     # Plain-text part first so non-HTML clients get something readable.
     message.set_content(_strip_html(body_html))
     message.add_alternative(body_html, subtype="html")
@@ -86,12 +99,16 @@ SAMPLE_VARIABLES: dict[str, Any] = {
     "token": "sample-token-0000",
     "subject": "Question about the Farmer Registry API",
     "response": "Thank you for your question. The endpoint now returns the district code as well.",
+    "ticket_no": "TKT-000123",
+    "ticket_url": "https://sandbox.example.org/participant/support",
+    "message": "I tried the call again and it still returns 401.",
+    "participant_name": "Abebe Kebede",
 }
 
 
 def sample_variables(text: str | None = None) -> dict[str, Any]:
     """Sample values for every placeholder (unknown ones show as ``[name]``)."""
-    values = {"portal_url": settings.portal_url, **SAMPLE_VARIABLES}
+    values = {"portal_url": settings.portal_base_url, **SAMPLE_VARIABLES}
     for key in extract_placeholders(text):
         values.setdefault(key, f"[{key}]")
     return values
@@ -113,6 +130,7 @@ def send_templated(
     to_email: str,
     variables: dict[str, Any],
     locale: str = "en",
+    headers: dict[str, str] | None = None,
 ) -> bool:
     """Render a stored template and send it."""
     template = EmailTemplateRepository(db).get_by_code(template_code, locale)
@@ -129,11 +147,13 @@ def send_templated(
         subject_text, body_text = default[2], default[3]
 
     merged = {
-        "portal_url": settings.portal_url,
+        "portal_url": settings.portal_base_url,
         **variables,
     }
     subject = render_template(subject_text, merged)
     body = render_template(body_text, merged, escape_html=True)
+    if headers:
+        return send_email(to_email, subject, body, headers=headers)
     return send_email(to_email, subject, body)
 
 

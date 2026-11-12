@@ -150,8 +150,8 @@ export default function ParticipantsPage() {
   });
 
   function invalidate() {
-    queryClient.invalidateQueries({ queryKey: ["admin", "participants"] });
-    queryClient.invalidateQueries({ queryKey: ["admin", "dashboard"] });
+    void queryClient.invalidateQueries({ queryKey: ["admin", "participants"] });
+    void queryClient.invalidateQueries({ queryKey: ["admin", "dashboard"] });
   }
 
   const decide = useMutation({

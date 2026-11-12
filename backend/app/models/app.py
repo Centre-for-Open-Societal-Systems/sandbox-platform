@@ -134,7 +134,6 @@ class ParticipantApp(Base, UniqueIdMixin, AuditMixin, SoftDeleteMixin):
     )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[str | None] = mapped_column(String(1000))
-    callback_url: Mapped[str | None] = mapped_column(String(1000))
     environment: Mapped[str] = mapped_column(
         String(20), default=str(Environment.UAT), nullable=False, index=True
     )
@@ -260,5 +259,13 @@ class ParticipantAppCredential(Base, UniqueIdMixin, AuditMixin):
     issued_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     revoked_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_used_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The key stops working at this time (APP_KEY_LIFETIME_DAYS at issue, or the
+    #: rotation grace period of a replaced key); empty = no expiry.
+    expires_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    #: When the owner was shown the secret in clear (once: at issue, rotation or
+    #: the first "Reveal"); empty = not yet shown.
+    secret_viewed_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: When the "key expires soon" email went out.
+    expiry_notified_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     app: Mapped[ParticipantApp] = relationship(back_populates="credentials")

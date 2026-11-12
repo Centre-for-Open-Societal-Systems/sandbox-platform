@@ -22,7 +22,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { MethodBadge, StatusCodeBadge } from "@/components/ui/status-badge";
 import { useToast } from "@/components/ui/toast";
-import { useEnvironments } from "@/hooks/use-environments";
+import { usePortalEnvironment } from "@/hooks/use-portal-environment";
 import { ENVIRONMENTS, type Environment } from "@/lib/config";
 import { CATALOG_STALE_MS } from "@/lib/cache-times";
 import { appsApi } from "@/lib/services/apps";
@@ -80,9 +80,8 @@ export default function SandboxTestPage() {
 
 function SandboxConsole({ productId, endpointId }: { productId: number; endpointId: number }) {
   const { notify } = useToast();
-  const available = useEnvironments();
-
-  const [environment, setEnvironment] = React.useState<Environment>(available[0] ?? "UAT");
+  // The portal's environment (My Apps sets it too); changing it here changes it there.
+  const [environment, setEnvironment, available] = usePortalEnvironment();
   /** Call as one of the participant's apps: the sandbox sends its API key. */
   const [appId, setAppId] = React.useState("");
   const [pathParams, setPathParams] = React.useState<Record<string, string>>({});
@@ -114,8 +113,9 @@ function SandboxConsole({ productId, endpointId }: { productId: number; endpoint
   const oauth = gatewayAuth?.mode === "oauth";
   const [appToken, setAppToken] = React.useState<AppToken | null>(null);
   const [seeded, setSeeded] = React.useState(false);
+  // Only the apps of the chosen environment: a UAT app's keys do not work on production.
   const callableApps = (appsQuery.data ?? []).filter(
-    (app) => app.status === 1 && app.credentials.some((c) => c.status === 1),
+    (app) => app.status === 1 && app.environment === environment && app.credentials.some((c) => c.status === 1),
   );
   /** The app's newest active key (the one the server sends), or blank. */
   function appKeyOf(id: string): string {
@@ -123,10 +123,18 @@ function SandboxConsole({ productId, endpointId }: { productId: number; endpoint
     return app?.credentials.find((c) => c.status === 1 && c.api_key)?.api_key ?? "";
   }
 
-  /** The app's newest active secret (only its owner gets it), or blank. */
-  function appSecretOf(id: string): string {
-    const app = callableApps.find((item) => item.app_id === id);
-    return app?.credentials.find((c) => c.status === 1 && c.api_key)?.api_secret ?? "";
+  /** The secret is shown once under My Apps, never here: the copied command carries a placeholder. */
+  function appSecretOf(_id: string): string {
+    return "";
+  }
+
+  /** Apps belong to one environment: switching drops an app of the other one (and its token). */
+  function changeEnvironment(next: Environment) {
+    const chosen = (appsQuery.data ?? []).find((item) => item.app_id === appId);
+    if (chosen && chosen.environment !== next) {
+      selectApp("");
+    }
+    setEnvironment(next);
   }
 
   function selectApp(id: string) {
@@ -305,7 +313,7 @@ function SandboxConsole({ productId, endpointId }: { productId: number; endpoint
                 <select
                   id="environment"
                   value={environment}
-                  onChange={(event) => setEnvironment(event.target.value as Environment)}
+                  onChange={(event) => changeEnvironment(event.target.value as Environment)}
                   className="h-11 w-full rounded-[10px] border border-hairline bg-white px-3 text-sm font-semibold text-ink focus:border-brand-bright focus:outline-none"
                 >
                   {ENVIRONMENTS.map((item) => (

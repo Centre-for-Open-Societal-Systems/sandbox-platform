@@ -123,8 +123,8 @@ export default function ProxyInfoPage() {
   );
 
   function invalidate() {
-    queryClient.invalidateQueries({ queryKey: ["admin", "endpoint", endpointId] });
-    queryClient.invalidateQueries({ queryKey: ["admin", "product", productId] });
+    void queryClient.invalidateQueries({ queryKey: ["admin", "endpoint", endpointId] });
+    void queryClient.invalidateQueries({ queryKey: ["admin", "product", productId] });
   }
 
   const updateEndpoint = useMutation({

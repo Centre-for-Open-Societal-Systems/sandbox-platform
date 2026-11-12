@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 
 import { PAGE_CONTAINER, PageBanner } from "@/components/layout/page-banner";
+import { ProductExportButtons } from "@/components/portal/product-export-buttons";
 import { MethodBadge } from "@/components/ui/status-badge";
 import { CategoryIcon } from "@/lib/category-icons";
 import { sanitizeHtml } from "@/lib/sanitize";
@@ -203,6 +204,10 @@ export default async function ProductPage({ params }: PageProps) {
                 Download documentation
               </a>
             ) : null}
+            <div className="mt-5 border-t border-[#f0ece1] pt-4">
+              <p className="mb-2 text-xs font-semibold tracking-wide text-slate-500 uppercase">API contract</p>
+              <ProductExportButtons productId={product.product_id} productName={name} audience="public" />
+            </div>
           </section>
 
           <Link

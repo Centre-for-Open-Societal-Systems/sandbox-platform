@@ -14,7 +14,12 @@ from app.schemas.catalog import (
     TryItRequest,
 )
 from app.schemas.content import ApiLogQuery
-from app.services import catalog_service, log_service, sandbox_service
+from app.services import (
+    catalog_export_service,
+    catalog_service,
+    log_service,
+    sandbox_service,
+)
 
 router = APIRouter(tags=["User / Sandbox"])
 
@@ -46,6 +51,18 @@ def catalog_menu(
 def get_product(product_id: int, current: CurrentParticipant, db: DbSession):
     product = catalog_service.get_product(db, product_id, published_only=True)
     return ok("Product loaded.", product.model_dump())
+
+
+@router.get("/catalog/products/{product_id}/openapi")
+def product_openapi(
+    product_id: int,
+    current: CurrentParticipant,
+    db: DbSession,
+    environment: Environment = Query(Environment.UAT),
+):
+    """OpenAPI 3.0 document of one product, with the gateway URL of ``environment``."""
+    sandbox_service.assert_environment_allowed(current.participant, environment)
+    return ok("OpenAPI document generated.", catalog_export_service.openapi_document(db, product_id, environment))
 
 
 @router.get("/catalog/endpoints/{endpoint_id}")

@@ -22,6 +22,8 @@ from app.core.logging import get_logger
 logger = get_logger("app.access")
 
 CORRELATION_HEADER = "x-correlation-id"
+#: The same id under the name API clients and gateways usually send / expect.
+REQUEST_ID_HEADER = "x-request-id"
 
 
 def _trusted(address: str) -> bool:
@@ -36,6 +38,13 @@ def _trusted(address: str) -> bool:
         except ValueError:
             continue
     return False
+
+
+def _safe_id(value: str | None) -> str:
+    """A caller-supplied id is kept only if it is short and plain (it lands in logs and headers)."""
+    if value and len(value) <= 64 and all(c.isalnum() or c in "-_.:" for c in value):
+        return value
+    return str(uuid.uuid4())
 
 
 def get_client_ip(request: Request) -> str:
@@ -64,7 +73,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
     """Seed the request-scoped context vars and emit one access log line."""
 
     async def dispatch(self, request: Request, call_next):
-        correlation_id = request.headers.get(CORRELATION_HEADER) or str(uuid.uuid4())
+        correlation_id = _safe_id(request.headers.get(CORRELATION_HEADER) or request.headers.get(REQUEST_ID_HEADER))
         tokens = [
             correlation_id_ctx.set(correlation_id),
             client_ip_ctx.set(get_client_ip(request)),
@@ -87,6 +96,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
                 var.reset(token)
 
         response.headers[CORRELATION_HEADER] = correlation_id
+        response.headers[REQUEST_ID_HEADER] = correlation_id
         logger.info(
             "%s %s -> %s (%.1fms)",
             request.method,

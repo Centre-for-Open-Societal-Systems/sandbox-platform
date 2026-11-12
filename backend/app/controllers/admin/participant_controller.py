@@ -37,13 +37,20 @@ from app.models.enums import Environment
 from app.schemas.common import ToggleRequest
 from app.schemas.content import ExportRequest
 from app.schemas.participant import (
+    AdminQueryMessageCreate,
     ApproveRequest,
     ParticipantListQuery,
     QueryListQuery,
     QueryRespondRequest,
+    QueryStatusRequest,
     RejectRequest,
 )
-from app.services import audit_service, iam_user_service, participant_service
+from app.services import (
+    audit_service,
+    iam_user_service,
+    participant_service,
+    support_service,
+)
 from app.services.audit_service import Action
 
 router = APIRouter(prefix="/participants", tags=["Admin / Participants"])
@@ -158,7 +165,7 @@ ManageQueries = Annotated[
 
 @router.post("/queries/list")
 def list_queries(payload: QueryListQuery, admin: ManageQueries, db: DbSession):
-    page = participant_service.list_queries(db, payload)
+    page = support_service.list_queries(db, payload)
     return ok("Queries loaded.", page.as_dict("queries"))
 
 
@@ -166,10 +173,35 @@ def list_queries(payload: QueryListQuery, admin: ManageQueries, db: DbSession):
 def respond_to_query(
     payload: QueryRespondRequest, admin: ManageQueries, db: DbSession
 ):
-    participant_service.respond_to_query(
+    """One-shot reply (kept for older clients): a message on the ticket's thread."""
+    support_service.respond_to_query(
         db, admin, payload.query_id, payload.response, payload.status
     )
     return ok("Response sent successfully.")
+
+
+@router.get("/queries/{query_id}")
+def query_thread(query_id: int, admin: ManageQueries, db: DbSession):
+    """A ticket with its whole conversation, staff notes included."""
+    return ok("Ticket loaded.", support_service.admin_thread(db, admin, query_id).model_dump())
+
+
+@router.post("/queries/{query_id}/messages")
+def add_query_message(
+    query_id: int, payload: AdminQueryMessageCreate, admin: ManageQueries, db: DbSession
+):
+    """Reply to the participant (emailed), or with ``internal`` a staff-only note."""
+    thread = support_service.admin_message(
+        db, admin, query_id, payload.body, internal=payload.internal, status=payload.status
+    )
+    return ok("Note saved." if payload.internal else "Reply sent.", thread.model_dump())
+
+
+@router.post("/queries/{query_id}/status")
+def set_query_status(
+    query_id: int, payload: QueryStatusRequest, admin: ManageQueries, db: DbSession
+):
+    return ok("Status updated.", support_service.admin_set_status(db, admin, query_id, payload.status).model_dump())
 
 
 @router.get("/{participant_id}/iam-account")

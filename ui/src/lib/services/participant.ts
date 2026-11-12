@@ -13,6 +13,7 @@ import type {
   PromotionRequest,
   PublicHome,
   SupportQuery,
+  SupportThread,
   TermSection,
   ParticipantSession,
 } from "@/types/api";
@@ -103,6 +104,9 @@ export const participantApi = {
   // ---------------------------------------------------------- portal
   profile: () => api.get<Participant>("/participant/profile", OPTIONS),
 
+  /** Everything the sandbox holds about the account, as JSON (no keys or secrets inside). */
+  exportMyData: () => api.get<Record<string, unknown>>("/participant/profile/export", OPTIONS),
+
   updateProfile: (formData: FormData) => {
     // The endpoint accepts multipart so the optional ID proof can ride along.
     return api.upload<Participant>("/participant/profile", formData, OPTIONS, "PUT");
@@ -142,6 +146,14 @@ export const participantApi = {
     ),
 
   listQueries: () => api.get<SupportQuery[]>("/participant/queries", OPTIONS),
+
+  /** One ticket with its conversation; opening it marks it read. */
+  getQuery: (queryId: number) => api.get<SupportThread>(`/participant/queries/${queryId}`, OPTIONS),
+
+  replyToQuery: (queryId: number, body: string) =>
+    api.post<SupportThread>(`/participant/queries/${queryId}/messages`, { body }, OPTIONS),
+
+  closeQuery: (queryId: number) => api.post<SupportThread>(`/participant/queries/${queryId}/close`, {}, OPTIONS),
 
   apiHistoryDetail: (logId: number) =>
     api.get<ApiLogDetail>(`/participant/api-history/${logId}`, OPTIONS),

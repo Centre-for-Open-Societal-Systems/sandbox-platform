@@ -91,7 +91,7 @@ export default function ParticipantDashboard() {
     onSuccess: (_data, { environment }) => {
       notify(`${environment} access request submitted. You will be emailed once it is reviewed.`, "success");
       setProductionFormOpen(false);
-      queryClient.invalidateQueries({ queryKey: ["user", "promotion-requests"] });
+      void queryClient.invalidateQueries({ queryKey: ["user", "promotion-requests"] });
     },
     onError: (error: Error) => notify(error.message, "error"),
   });

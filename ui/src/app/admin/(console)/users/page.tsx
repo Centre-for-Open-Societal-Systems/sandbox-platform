@@ -74,7 +74,7 @@ export default function AdministratorsPage() {
   }
 
   function invalidate() {
-    queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+    void queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
   }
 
   const save = useMutation({

@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronUp,
   Hourglass,
+  Rocket,
   KeyRound,
   Loader2,
   PackagePlus,
@@ -18,6 +19,7 @@ import {
 
 import {
   AppStatusBadge,
+  EnvironmentBadge,
   GatewayBadge,
   SecretField,
   SubscriptionBadge,
@@ -40,6 +42,8 @@ import { Input, Textarea } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { MethodBadge } from "@/components/ui/status-badge";
 import { useToast } from "@/components/ui/toast";
+import { EnvironmentToggle } from "@/components/portal/environment-toggle";
+import { usePortalEnvironment } from "@/hooks/use-portal-environment";
 import { appsApi } from "@/lib/services/apps";
 import { cn, formatDateTime } from "@/lib/utils";
 import type { AppSubscription, AvailableApiProduct, IssuedCredential, ParticipantApp } from "@/types/api";
@@ -59,6 +63,19 @@ export default function MyAppsPage() {
   const [issued, setIssued] = React.useState<{ appName: string; credential: IssuedCredential } | null>(null);
 
   const apps = appsQuery.data ?? [];
+  // The environment chosen here is the portal's (try-it starts in it too).
+  const [environment, setEnvironment, available] = usePortalEnvironment();
+  const shown = apps.filter((a) => a.environment === environment);
+  const counts = {
+    UAT: apps.filter((a) => a.environment === "UAT").length,
+    PRODUCTION: apps.filter((a) => a.environment === "PRODUCTION").length,
+  };
+  // "Move to production" once the account is approved for production; one copy per app name.
+  const inProduction = available.includes("PRODUCTION");
+  const productionNames = new Set(
+    apps.filter((a) => a.environment === "PRODUCTION").map((a) => a.name.toLowerCase()),
+  );
+  const production = environment === "PRODUCTION";
 
   return (
     <div>
@@ -72,21 +89,49 @@ export default function MyAppsPage() {
       />
 
       <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
-        <div className="text-sm text-subtle">
-          Send the key in the <code className="rounded bg-surface-soft px-1 font-mono">apikey</code> header on every
-          call to the gateway.
+        <div className="flex flex-wrap items-center gap-3">
+          <EnvironmentToggle
+            value={environment}
+            onChange={setEnvironment}
+            available={available}
+            label="Show apps of"
+            counts={counts}
+          />
+          <span className="text-sm text-subtle">
+            {production
+              ? "Production apps have their own keys, which work only on production."
+              : "UAT apps' keys work only on UAT."}
+          </span>
         </div>
-        <Button onClick={() => setCreating(true)}>
-          <Plus className="h-4 w-4" aria-hidden />
-          Create app
-        </Button>
+        {production ? (
+          <span className="text-sm text-subtle">
+            New production apps come from a UAT app: <strong>Move to production</strong>.
+          </span>
+        ) : (
+          <Button onClick={() => setCreating(true)}>
+            <Plus className="h-4 w-4" aria-hidden />
+            Create app
+          </Button>
+        )}
       </div>
 
       {appsQuery.isLoading ? (
         <p className="mt-10 flex items-center justify-center gap-2 text-sm text-subtle">
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Loading your apps…
         </p>
-      ) : apps.length === 0 ? (
+      ) : shown.length === 0 && production ? (
+        <div className="mt-6 rounded-2xl border border-dashed border-hairline bg-white p-10 text-center">
+          <Rocket className="mx-auto h-8 w-8 text-brand-bright" aria-hidden />
+          <h2 className="mt-3 font-semibold text-nav-active">No production apps yet</h2>
+          <p className="mx-auto mt-1 max-w-md text-sm text-subtle">
+            Switch to UAT and choose <strong>Move to production</strong> on an active app. An administrator approves the
+            production app, which then gets its own API key and secret.
+          </p>
+          <Button className="mt-5" variant="outline" onClick={() => setEnvironment("UAT")}>
+            Show UAT apps
+          </Button>
+        </div>
+      ) : shown.length === 0 ? (
         <div className="mt-6 rounded-2xl border border-dashed border-hairline bg-white p-10 text-center">
           <KeyRound className="mx-auto h-8 w-8 text-brand-bright" aria-hidden />
           <h2 className="mt-3 font-semibold text-nav-active">No apps yet</h2>
@@ -101,12 +146,18 @@ export default function MyAppsPage() {
         </div>
       ) : (
         <ul className="mt-6 flex flex-col gap-5">
-          {apps.map((app) => (
+          {shown.map((app) => (
             <AppCard
               key={app.app_id}
               app={app}
               products={productsQuery.data ?? []}
               onIssued={(credential) => setIssued({ appName: app.name, credential })}
+              promotable={
+                inProduction &&
+                app.environment === "UAT" &&
+                app.status === 1 &&
+                !productionNames.has(app.name.toLowerCase())
+              }
             />
           ))}
         </ul>
@@ -134,8 +185,8 @@ export default function MyAppsPage() {
       <Dialog open={issued !== null} onOpenChange={(open) => !open && setIssued(null)}>
         <DialogContent className="max-w-xl">
           <DialogHeader>
-            <DialogTitle>Your new key for {issued?.appName}</DialogTitle>
-            <DialogDescription>Both are also listed on the app, masked until you reveal them.</DialogDescription>
+            <DialogTitle>Your key for {issued?.appName}</DialogTitle>
+            <DialogDescription>The secret is shown only now. Copy it before closing; it cannot be shown again.</DialogDescription>
           </DialogHeader>
           {issued ? (
             <div className="flex flex-col gap-4">
@@ -143,7 +194,7 @@ export default function MyAppsPage() {
               <SecretField label="Secret" value={issued.credential.api_secret} />
               <p className="flex gap-2 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
                 <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden />
-                Keep both out of source code and browsers. If they leak, revoke the key and issue a new one.
+                Keep both out of source code and browsers. If the secret leaks or is lost, rotate the key.
               </p>
             </div>
           ) : null}
@@ -160,16 +211,20 @@ function AppCard({
   app,
   products,
   onIssued,
+  promotable,
 }: {
   app: ParticipantApp;
   products: AvailableApiProduct[];
   onIssued: (credential: IssuedCredential) => void;
+  /** A UAT app that may get a production copy ("Move to production"). */
+  promotable: boolean;
 }) {
   const queryClient = useQueryClient();
   const { notify } = useToast();
   const { confirm, dialog } = useConfirm();
   const [editing, setEditing] = React.useState(false);
   const [adding, setAdding] = React.useState(false);
+  const [promoting, setPromoting] = React.useState(false);
   const pending = app.status === 0;
   const active = app.status === 1;
   const revoked = app.status === 2;
@@ -184,12 +239,28 @@ function AppCard({
         (apps ?? []).map((a) => (a.app_id === next.app_id ? next : a)),
       );
     }
-    queryClient.invalidateQueries({ queryKey: APPS_KEY });
+    void queryClient.invalidateQueries({ queryKey: APPS_KEY });
   }
   const onError = (error: Error) => notify(error.message, "error");
 
   const issueKey = useMutation({
     mutationFn: () => appsApi.issueKey(app.app_id),
+    onSuccess: (credential) => {
+      refreshWith();
+      onIssued(credential);
+    },
+    onError,
+  });
+  const rotateKey = useMutation({
+    mutationFn: (credentialId: string) => appsApi.rotateKey(app.app_id, credentialId),
+    onSuccess: (credential) => {
+      refreshWith();
+      onIssued(credential);
+    },
+    onError,
+  });
+  const revealSecret = useMutation({
+    mutationFn: (credentialId: string) => appsApi.revealSecret(app.app_id, credentialId),
     onSuccess: (credential) => {
       refreshWith();
       onIssued(credential);
@@ -231,13 +302,13 @@ function AppCard({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-lg font-semibold text-nav-active">{app.name}</h2>
+            <EnvironmentBadge environment={app.environment} />
             <AppStatusBadge status={app.status} label={app.status_label} />
             <GatewayBadge status={app.gateway_status} />
           </div>
           <p className="mt-1 text-sm text-subtle">
             {app.description || "No description."} · created {formatDateTime(app.added_date)}
           </p>
-          {app.callback_url ? <p className="mt-1 text-xs text-subtle">Callback: {app.callback_url}</p> : null}
           <dl className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-xs">
             <div className="flex gap-1">
               <dt className="text-subtle">Allowed IPs:</dt>
@@ -251,9 +322,29 @@ function AppCard({
                 <dd className="font-medium text-ink">{limitText(app.rate_limit_per_minute, app.quota_per_day)}</dd>
               </div>
             ) : null}
+            {app.calls_today !== null && app.quota_per_day ? (
+              <div className="flex gap-1">
+                <dt className="text-subtle">Used today:</dt>
+                <dd
+                  className={cn(
+                    "font-medium",
+                    app.calls_today >= app.quota_per_day ? "text-red-700" : app.calls_today >= app.quota_per_day * 0.8 ? "text-amber-700" : "text-ink",
+                  )}
+                  title="From your call history; the gateway's own counter decides. Over the limit you get HTTP 429."
+                >
+                  {app.calls_today.toLocaleString()} of {app.quota_per_day.toLocaleString()} calls ({Math.max(0, app.quota_per_day - app.calls_today).toLocaleString()} left)
+                </dd>
+              </div>
+            ) : null}
           </dl>
         </div>
         <div className="flex gap-2">
+          {promotable ? (
+            <Button variant="outline" size="sm" onClick={() => setPromoting(true)}>
+              <Rocket className="h-3.5 w-3.5" aria-hidden />
+              Move to production
+            </Button>
+          ) : null}
           <Button variant="outline" size="sm" onClick={() => setEditing(true)} disabled={blocked}>
             <Pencil className="h-3.5 w-3.5" aria-hidden />
             Edit
@@ -386,15 +477,62 @@ function AppCard({
                 <li key={c.credential_id} className="rounded-lg border border-hairline p-3">
                   <div className="flex flex-col gap-2">
                     {c.api_key ? <SecretField label="API key" value={c.api_key} masked /> : null}
-                    {c.api_secret ? (
-                      <SecretField label="Secret" value={c.api_secret} masked />
+                    {c.secret_viewed ? (
+                      <span className="text-xs text-subtle">
+                        Secret {c.api_secret_hint} was shown once and cannot be shown again. Rotate the key to get a new one.
+                      </span>
                     ) : (
-                      <span className="text-xs text-subtle">Secret {c.api_secret_hint}</span>
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs text-subtle">Secret {c.api_secret_hint}</span>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          loading={revealSecret.isPending && revealSecret.variables === c.credential_id}
+                          onClick={async () => {
+                            if (
+                              await confirm({
+                                title: "Reveal the secret?",
+                                consequence:
+                                  "The secret is shown once. Copy it somewhere safe; if you lose it you must rotate the key.",
+                                confirmLabel: "Reveal",
+                              })
+                            ) {
+                              revealSecret.mutate(c.credential_id);
+                            }
+                          }}
+                        >
+                          Reveal secret
+                        </Button>
+                      </div>
                     )}
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-subtle">
                     <span>Issued {formatDateTime(c.issued_date)}</span>
+                    {c.expires_date ? <span className="font-medium text-amber-700">Expires {formatDateTime(c.expires_date)}</span> : null}
                     {c.last_used_date ? <span>Used in try-it {formatDateTime(c.last_used_date)}</span> : null}
+                    <button
+                      type="button"
+                      className="ml-auto font-medium text-brand-700 hover:underline disabled:opacity-50"
+                      disabled={activeKeys.length >= MAX_ACTIVE_KEYS || rotateKey.isPending}
+                      title={
+                        activeKeys.length >= MAX_ACTIVE_KEYS
+                          ? "Revoke a key first, then rotate"
+                          : "Issue a replacement; this key keeps working for a few days, then expires"
+                      }
+                      onClick={async () => {
+                        if (
+                          await confirm({
+                            title: "Rotate this key?",
+                            consequence: `A new key and secret are issued now. ${c.api_key_prefix}… keeps working during the grace period so you can switch over, then expires.`,
+                            confirmLabel: "Rotate",
+                          })
+                        ) {
+                          rotateKey.mutate(c.credential_id);
+                        }
+                      }}
+                    >
+                      Rotate
+                    </button>
                     <button
                       type="button"
                       className="ml-auto font-medium text-red-700 hover:underline"
@@ -424,6 +562,16 @@ function AppCard({
       </div>
 
       {editing ? <EditAppDialog app={app} onClose={() => setEditing(false)} onSaved={(next) => { setEditing(false); refreshWith(next); }} /> : null}
+      {promoting ? (
+        <PromoteAppDialog
+          app={app}
+          onClose={() => setPromoting(false)}
+          onPromoted={() => {
+            setPromoting(false);
+            refreshWith();
+          }}
+        />
+      ) : null}
       {adding ? (
         <RequestProductsDialog
           app={app}
@@ -616,7 +764,7 @@ function CreateAppDialog({
 }) {
   const queryClient = useQueryClient();
   const { notify } = useToast();
-  const [form, setForm] = React.useState({ name: "", description: "", callback_url: "", allowed_ips: "" });
+  const [form, setForm] = React.useState({ name: "", description: "", allowed_ips: "" });
   const [selected, setSelected] = React.useState<number[]>([]);
 
   const create = useMutation({
@@ -624,12 +772,11 @@ function CreateAppDialog({
       appsApi.create({
         name: form.name.trim(),
         description: form.description.trim() || null,
-        callback_url: form.callback_url.trim() || null,
         allowed_ips: parseIpList(form.allowed_ips),
         api_product_ids: selected,
       }),
     onSuccess: (created) => {
-      queryClient.invalidateQueries({ queryKey: APPS_KEY });
+      void queryClient.invalidateQueries({ queryKey: APPS_KEY });
       onCreated(created.app, created.credential);
     },
     onError: (error: Error) => notify(error.message, "error"),
@@ -666,17 +813,6 @@ function CreateAppDialog({
                 value={form.name}
                 onChange={(event) => setForm({ ...form, name: event.target.value })}
                 placeholder="Field Survey App"
-              />
-            </div>
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="app-callback">Callback URL</Label>
-              <Input
-                id="app-callback"
-                type="url"
-                maxLength={1000}
-                value={form.callback_url}
-                onChange={(event) => setForm({ ...form, callback_url: event.target.value })}
-                placeholder="https://example.org/oan/callback"
               />
             </div>
             <div className="flex flex-col gap-2 sm:col-span-2">
@@ -723,7 +859,6 @@ function EditAppDialog({ app, onClose, onSaved }: { app: ParticipantApp; onClose
   const [form, setForm] = React.useState({
     name: app.name,
     description: app.description ?? "",
-    callback_url: app.callback_url ?? "",
     allowed_ips: app.allowed_ips.join("\n"),
   });
   const save = useMutation({
@@ -731,7 +866,6 @@ function EditAppDialog({ app, onClose, onSaved }: { app: ParticipantApp; onClose
       appsApi.update(app.app_id, {
         name: form.name.trim(),
         description: form.description.trim() || null,
-        callback_url: form.callback_url.trim() || null,
         allowed_ips: parseIpList(form.allowed_ips),
       }),
     onSuccess: (next) => {
@@ -762,10 +896,6 @@ function EditAppDialog({ app, onClose, onSaved }: { app: ParticipantApp; onClose
             <Input id="edit-app-name" required minLength={2} maxLength={100} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
           </div>
           <div className="flex flex-col gap-2">
-            <Label htmlFor="edit-app-callback">Callback URL</Label>
-            <Input id="edit-app-callback" type="url" maxLength={1000} value={form.callback_url} onChange={(event) => setForm({ ...form, callback_url: event.target.value })} />
-          </div>
-          <div className="flex flex-col gap-2">
             <Label htmlFor="edit-app-description">Description</Label>
             <Textarea id="edit-app-description" rows={3} maxLength={1000} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
           </div>
@@ -781,6 +911,102 @@ function EditAppDialog({ app, onClose, onSaved }: { app: ParticipantApp; onClose
           </Button>
           <Button type="submit" form="edit-app-form" loading={save.isPending}>
             Save
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * "Move to production": a production copy of this UAT app with its own keys. Its
+ * servers often differ, so description and IP whitelist start as the
+ * UAT app's and can be changed; the API products go with it.
+ */
+function PromoteAppDialog({
+  app,
+  onClose,
+  onPromoted,
+}: {
+  app: ParticipantApp;
+  onClose: () => void;
+  onPromoted: () => void;
+}) {
+  const { notify } = useToast();
+  const [form, setForm] = React.useState({
+    description: app.description ?? "",
+    allowed_ips: app.allowed_ips.join("\n"),
+  });
+  const carried = app.products.filter((p) => p.status === 0 || p.status === 1);
+  const promote = useMutation({
+    mutationFn: () =>
+      appsApi.promote(app.app_id, {
+        description: form.description.trim() || null,
+        allowed_ips: parseIpList(form.allowed_ips),
+      }),
+    onSuccess: () => {
+      notify(
+        `A production copy of "${app.name}" is submitted for approval. Its own API key and secret appear here once an administrator approves it.`,
+        "success",
+      );
+      onPromoted();
+    },
+    onError: (error: Error) => notify(error.message, "error"),
+  });
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Move &quot;{app.name}&quot; to production</DialogTitle>
+          <DialogDescription>
+            A production app is created with its own API key and secret, which work only on production. An
+            administrator approves it and each API product. This UAT app stays as it is.
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          id="promote-app-form"
+          className="flex flex-col gap-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            promote.mutate();
+          }}
+        >
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="promote-app-description">Description</Label>
+            <Textarea
+              id="promote-app-description"
+              rows={2}
+              maxLength={1000}
+              value={form.description}
+              onChange={(event) => setForm({ ...form, description: event.target.value })}
+            />
+          </div>
+          <IpWhitelistField
+            id="promote-app-ips"
+            value={form.allowed_ips}
+            onChange={(allowed_ips) => setForm({ ...form, allowed_ips })}
+          />
+          <div className="rounded-lg border border-hairline bg-surface-soft p-3 text-sm">
+            <p className="text-xs font-medium text-subtle">API products requested for production</p>
+            {carried.length ? (
+              <ul className="mt-1 flex flex-wrap gap-1.5">
+                {carried.map((p) => (
+                  <li key={p.api_product_id} className="rounded bg-white px-2 py-0.5 text-xs text-ink ring-1 ring-hairline">
+                    {p.display_name ?? p.name}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-1 text-xs text-subtle">None yet; request them on the production app afterwards.</p>
+            )}
+          </div>
+        </form>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="submit" form="promote-app-form" loading={promote.isPending}>
+            Move to production
           </Button>
         </DialogFooter>
       </DialogContent>
