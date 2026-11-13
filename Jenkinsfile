@@ -3,16 +3,19 @@
 // APISIX ingress), images in Amazon ECR.
 //
 //   1. Versions  chart = newest oan-helm release tag `oan-sandbox-*` (or CHART_REF),
-//                else oan-helm main, pulled fresh on every run; image tag = that
-//                chart's version (e.g. 1.0.0-dev.19), plus the develop commit
+//                else oan-helm main, pulled fresh on every run
 //   2. Registry  ECR login; creates the repositories if missing; skips the build
 //                when that chart version and that commit are both already in ECR
 //                (eoan/sandbox-platform/oan-sandbox-api, eoan/sandbox-platform/oan-sandbox-web)
-//   3. Test + build + push the API and web images (only when needed)
-//   4. Deploy    helm upgrade with that chart and those images, unless the release
-//                already runs exactly them (deployment/jenkins/deploy.sh). Images
-//                are deployed by digest: the chart-version tag is reused by every
-//                build of that version.
+//   3. Test + build + push the API and web images (only when needed), tagged
+//                <chart version>-<build number>  e.g. 1.0.0-dev.19-49  (unique, deployed)
+//                <chart version>                 e.g. 1.0.0-dev.19     (latest build of it)
+//                <commit>                        e.g. 8d7226c1a2b3
+//                develop
+//   4. Deploy    helm upgrade with that chart and the <chart version>-<build number>
+//                images, unless the release already runs exactly them
+//                (deployment/jenkins/deploy.sh). When the build was skipped, the
+//                images keep the build-number tag they were pushed with.
 //
 // Pods pull from ECR without a pull Secret: k3s on the VM runs AWS's
 // ecr-credential-provider with the instance role oan-services-dev-ecr-pull (the same
@@ -127,6 +130,11 @@ pipeline {
             error("Chart version '${version}' is not a valid image tag")
           }
           env.TAG = version
+          // Unique per build: what gets deployed, and what Rancher shows.
+          env.IMAGE_TAG = "${version}-${env.BUILD_NUMBER}"
+          if (!(env.IMAGE_TAG ==~ /[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}/)) {
+            error("Image tag '${env.IMAGE_TAG}' is not a valid image tag")
+          }
           currentBuild.description = "${env.TAG} (${env.COMMIT_TAG}) / chart ${ref}"
           echo "Chart: ${env.CHART_ID}"
         }
@@ -209,13 +217,17 @@ pipeline {
           web_latest="$ECR_REGISTRY/$ECR_REPO_PREFIX-web:develop"
           api_commit="$ECR_REGISTRY/$ECR_REPO_PREFIX-api:$COMMIT_TAG"
           web_commit="$ECR_REGISTRY/$ECR_REPO_PREFIX-web:$COMMIT_TAG"
-          docker build -f docker/sandbox-api/Dockerfile -t "$API_IMAGE" -t "$api_commit" -t "$api_latest" .
+          api_build="$ECR_REGISTRY/$ECR_REPO_PREFIX-api:$IMAGE_TAG"
+          web_build="$ECR_REGISTRY/$ECR_REPO_PREFIX-web:$IMAGE_TAG"
+          docker build -f docker/sandbox-api/Dockerfile \
+            -t "$api_build" -t "$API_IMAGE" -t "$api_commit" -t "$api_latest" .
           # The browser API URL is built into the web image (one image per environment).
-          docker build -t "$WEB_IMAGE" -t "$web_commit" -t "$web_latest" \
+          docker build -t "$web_build" -t "$WEB_IMAGE" -t "$web_commit" -t "$web_latest" \
             --build-arg NEXT_PUBLIC_API_BASE_URL="https://$SANDBOX_HOSTNAME/oan" \
             --build-arg NEXT_PUBLIC_DEFAULT_COUNTRY=ET \
             --build-arg NEXT_PUBLIC_SITE_NAME="Open Agri Net" ui
-          for image in "$API_IMAGE" "$api_commit" "$api_latest" "$WEB_IMAGE" "$web_commit" "$web_latest"; do
+          for image in "$api_build" "$API_IMAGE" "$api_commit" "$api_latest" \
+                       "$web_build" "$WEB_IMAGE" "$web_commit" "$web_latest"; do
             docker push "$image"
           done
         '''
@@ -237,7 +249,7 @@ pipeline {
             printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
             for c in api web; do
               src="$ECR_REGISTRY/$ECR_REPO_PREFIX-$c:$TAG"
-              for t in "$TAG" develop; do
+              for t in "$IMAGE_TAG" "$TAG" develop; do
                 docker tag "$src" "$GHCR_PREFIX-$c:$t"
                 docker push "$GHCR_PREFIX-$c:$t"
               done
@@ -260,18 +272,42 @@ pipeline {
             #   ssh-keyscan -t ed25519,ecdsa,rsa $SSH_HOST > deployment/jenkins/known_hosts
             SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$WORKSPACE/deployment/jenkins/known_hosts -o ServerAliveInterval=30 $SSH_USER@$SSH_HOST"
 
-            # The chart-version tag moves on every rebuild, so deploy the exact digests.
-            API_DIGEST=$($AWS ecr describe-images --repository-name "$ECR_REPO_PREFIX-api" \
-              --image-ids imageTag="$TAG" --query 'imageDetails[0].imageDigest' --output text | tr -d '\\r')
-            WEB_DIGEST=$($AWS ecr describe-images --repository-name "$ECR_REPO_PREFIX-web" \
-              --image-ids imageTag="$TAG" --query 'imageDetails[0].imageDigest' --output text | tr -d '\\r')
-            echo "Digests: api $API_DIGEST, web $WEB_DIGEST"
+            # Deploy the unique <chart version>-<build number> tag. When this run skipped
+            # the build, reuse the newest such tag already on this commit's images, so the
+            # 6-hourly timer runs find the release up to date. Images pushed before these
+            # tags existed get this run's tag added (same manifest, no rebuild).
+            DEPLOY_TAG=$IMAGE_TAG
+            if [ "$NEED_BUILD" != true ]; then
+              found=$($AWS ecr describe-images --repository-name "$ECR_REPO_PREFIX-api" \
+                  --image-ids imageTag="$COMMIT_TAG" --query 'imageDetails[0].imageTags' --output text \
+                | tr -d '\\r' | tr '\\t' '\\n' \
+                | awk -v p="$TAG-" 'index($0, p) == 1 { n = substr($0, length(p) + 1); if (n ~ /^[0-9]+$/) print n, $0 }' \
+                | sort -n | tail -n 1 | cut -d' ' -f2)
+              DEPLOY_TAG=${found:-$IMAGE_TAG}
+              for c in api web; do
+                repo="$ECR_REPO_PREFIX-$c"
+                if ! $AWS ecr describe-images --repository-name "$repo" --image-ids imageTag="$DEPLOY_TAG" >/dev/null 2>&1; then
+                  manifest=$($AWS ecr batch-get-image --repository-name "$repo" --image-ids imageTag="$COMMIT_TAG" \
+                    --query 'images[0].imageManifest' --output text)
+                  media_type=$($AWS ecr batch-get-image --repository-name "$repo" --image-ids imageTag="$COMMIT_TAG" \
+                    --query 'images[0].imageManifestMediaType' --output text | tr -d '\\r')
+                  $AWS ecr put-image --repository-name "$repo" --image-tag "$DEPLOY_TAG" \
+                    --image-manifest "$manifest" --image-manifest-media-type "$media_type" >/dev/null
+                  echo "Tagged $repo:$COMMIT_TAG as $DEPLOY_TAG"
+                fi
+              done
+            fi
+            echo "Deploying images tagged $DEPLOY_TAG"
 
             # The chart at the resolved oan-helm ref.
             tar -C oan-helm/charts -czf - oan-sandbox \
               | $SSH 'rm -rf ~/oan-deploy && mkdir -p ~/oan-deploy && tar -xzf - -C ~/oan-deploy'
 
-            $SSH "API_IMAGE='$API_IMAGE' WEB_IMAGE='$WEB_IMAGE' API_DIGEST='$API_DIGEST' WEB_DIGEST='$WEB_DIGEST' \
+            # No digests: deploy.sh then clears the digest left on the release and the
+            # chart renders repository:tag.
+            API_DEPLOY="$ECR_REGISTRY/$ECR_REPO_PREFIX-api:$DEPLOY_TAG"
+            WEB_DEPLOY="$ECR_REGISTRY/$ECR_REPO_PREFIX-web:$DEPLOY_TAG"
+            $SSH "API_IMAGE='$API_DEPLOY' WEB_IMAGE='$WEB_DEPLOY' API_DIGEST='' WEB_DIGEST='' \
               CHART_DIR=\\$HOME/oan-deploy/oan-sandbox \
               CHART_ID='$CHART_ID' HOST='$SANDBOX_HOSTNAME' NAMESPACE='$NAMESPACE' RELEASE='$RELEASE' \
               INGRESS_CLASS='$INGRESS_CLASS' \
@@ -287,7 +323,7 @@ pipeline {
       sh 'rm -rf "$DOCKER_CONFIG"'
     }
     success {
-      echo "https://${env.SANDBOX_HOSTNAME}  ${env.CHART_ID}  images ${env.TAG} (${env.COMMIT_TAG})"
+      echo "https://${env.SANDBOX_HOSTNAME}  ${env.CHART_ID}  commit ${env.COMMIT_TAG}"
     }
   }
 }
