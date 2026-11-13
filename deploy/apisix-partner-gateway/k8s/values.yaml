@@ -1,9 +1,12 @@
-# oan-partner-gateway: the partner APIs (Farmer Registry staff API) behind APISIX, for
-# apps created in the OAN sandbox. Every call carries the app's access token in
-# X-Partner-Token: a Keycloak client-credentials token (client_id = API key, client_secret
-# = API secret) from the realm the sandbox uses (KEYCLOAK_REALM). The routes check its
-# signature (realm JWKS), iss, exp, the environment role and that this route is in the
-# token's oan_routes (the app's approved API products).
+# oan-partner-gateway: the partner APIs behind APISIX, for apps created in the OAN sandbox.
+# Every call carries the app's access token in X-Partner-Token: a Keycloak
+# client-credentials token (client_id = API key, client_secret = API secret) from the realm
+# the sandbox uses (KEYCLOAK_REALM). The gateway checks its signature (realm JWKS), iss,
+# exp, the environment role and that the route is in the token's oan_routes (the app's
+# approved API products). `Authorization` stays the API's own credential and is passed on.
+#
+# One release per gateway. UAT and production are two gateways, so two releases, each with
+# its own values file: its hosts, its Keycloak realm (keycloak.issuer) and environmentRole.
 
 ingressClassName: apisix
 
@@ -26,12 +29,51 @@ keycloak:
 # production gateway.
 environmentRole: uat
 
-# Farmer Registry staff API (OpenG2P) and the Keycloak realm its own staff tokens come from
-# (/farmer-registry/auth/token).
-farmerRegistry:
-  upstreamHost: ""
-  keycloakHost: ""
-  keycloakRealm: staff
+# The plugins every route of an API shares (the app token check, the call log) are one
+# ApisixPluginConfig per API, and the routes point at it. true writes a copy on each route
+# instead: for an Ingress Controller that does not resolve plugin_config_name.
+inlineSharedPlugins: false
+
+# ---- APIs. Only what partners call: staff have their own portals, so no staff API is
+# routed here. Each API is switched on by `enabled`; its upstream is a public host (https, 443).
+
+# Consent Manager (OpenG2P).
+consentManager:
+  # Partner portal API (consent requests, OTP, consents, receipts) under /consent-manager:
+  # the console host, of which only /consent/v1/partner-portal is routed.
+  portalApi:
+    enabled: false
+    host: ""
+  # Partner API (validate, consent status, receipts, JWKS) under /consent-manager-partner.
+  partnerApi:
+    enabled: false
+    host: ""
+    # Path the host serves the API under, e.g. /api/consent-manager-partner. Empty = the root.
+    basePath: ""
+
+# Partner Management (OpenG2P): key fetch API (a partner's public keys) under
+# /partner-management-keys.
+partnerManagement:
+  keysApi:
+    enabled: false
+    host: ""
+
+# Aggregation Layer (DCI search) under /aggregation-layer.
+aggregationLayer:
+  enabled: false
+  host: ""
+
+# Call log: APISIX posts a record of every call of an app to the sandbox, which shows it in
+# API history (source Direct). Needs, in the sandbox, GATEWAY_LOG_INGEST_ENABLED=true and
+# GATEWAY_LOG_INGEST_TOKEN; and in the APISIX pods the variable
+# OAN_SANDBOX_LOG_INGEST_AUTHORIZATION = "Bearer <that token>" (oan-apisix-gateway chart,
+# Secret oan-sandbox-log-ingest-credential), which the plugin reads at run time, so the
+# token is never written into a route. The record format is the http-logger plugin metadata
+# of the gateway (oan-apisix-gateway chart, gatewayProxy.pluginMetadata).
+callLog:
+  enabled: false
+  # POST <sandbox API>/oan/internal/gateway/logs, as APISIX reaches it.
+  url: ""
 
 # Redis for limit-count counters shared by all APISIX pods. Empty = counted per pod.
 redis:

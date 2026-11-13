@@ -261,8 +261,16 @@ curl -X POST https://<partner host>/farmer-registry/register-data/get_register_s
 
 - Nothing is written to the gateway: no consumers or credentials. The sandbox only reads
   the routes (a **viewer** admin key is enough). The consumer plugins of the API-key modes
-  (app IP whitelist, per-product limits, `http-logger` for API history of direct calls) do
-  not apply; the routes limit calls per app.
+  (app IP whitelist, per-product limits) do not exist; the routes do the same from the
+  token: the app's whitelist is the claim `oan_ips`, the limits of its products
+  (`GATEWAY_RATE_LIMIT_ENABLED`) `oan_limit_minute` / `oan_limit_day`, counted per API.
+  A change applies from the next token (tokens live five minutes).
+- API history of direct calls: the routes carry `http-logger` themselves (chart
+  `oan-partner-gateway`, `callLog`) and name the app in each record (`app`, from the
+  token). Set `GATEWAY_LOG_INGEST_ENABLED=true` and `GATEWAY_LOG_INGEST_TOKEN`; the same
+  token goes to the APISIX pods as `OAN_SANDBOX_LOG_INGEST_AUTHORIZATION`
+  (`Bearer <token>`). `GATEWAY_LOG_INGEST_URL` is not used in this mode: the URL is the
+  chart's `callLog.url`.
 - The sandbox writes every active app key to Keycloak as a confidential client
   (`oan-sandbox-provisioner` needs `manage-clients`; `setup_partner_realm.py` gives it) whose
   tokens carry `participant_uid`, `oan_app`, `oan_environments` and `oan_routes` (the APISIX

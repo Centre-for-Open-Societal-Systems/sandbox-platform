@@ -271,6 +271,41 @@ def test_direct_calls_are_stored_once_and_shown_in_api_history(
     assert {row["app_name"] for row in history} == {"Partner Backend"}
 
 
+def test_calls_reported_by_the_routes_are_stored_for_the_app_they_name(
+    client, admin_headers, participant_headers, farmer_endpoints, db_session, monkeypatch
+):
+    """App OAuth tokens: no consumer, the route's http-logger names the app (X-OAN-App)."""
+    monkeypatch.setattr(settings, "GATEWAY_APP_SYNC_ENABLED", False)
+    read = _product(client, admin_headers, "farmer-read", farmer_endpoints[:2])
+    app = _create_app(client, participant_headers, "Token Backend", [read], admin_headers)["app"]
+    _enable_ingest(monkeypatch)
+    batch = [
+        _record("", "req-1", FARMER_PATHS[0], app=app["app_id"]),
+        _record("", "req-2", FARMER_PATHS[0], app=app["app_id"].upper(), status=403),
+        _record("", "req-3", FARMER_PATHS[0], app=app["app_id"], sandbox_txn="TXN-1"),  # try-it
+        _record("", "req-4", FARMER_PATHS[0]),  # refused before the token named an app
+        _record("", "req-5", FARMER_PATHS[0], app="00000000-0000-0000-0000-000000000000"),
+        _record("", "req-6", FARMER_PATHS[0], app="not-an-id"),
+    ]
+    headers = {"Authorization": f"Bearer {LOG_TOKEN}"}
+
+    first = client.post("/oan/internal/gateway/logs", json=batch, headers=headers)
+    assert first.status_code == 200, first.text
+    assert first.json()["data"] == {"stored": 2, "skipped": 4}
+    again = client.post("/oan/internal/gateway/logs", json=batch[:2], headers=headers)
+    assert again.json()["data"] == {"stored": 0, "skipped": 2}
+
+    rows = {row.gateway_request_id: row for row in db_session.query(ApiLog).all()}
+    assert set(rows) == {"req-1", "req-2"}
+    assert rows["req-1"].source == "DIRECT"
+    assert rows["req-1"].endpoint_id == farmer_endpoints[0]
+    assert rows["req-2"].error_message.startswith("Rejected: no access")
+    history = client.post(
+        "/oan/participant/api-history", headers=participant_headers, json={"source": "DIRECT"}
+    ).json()["data"]["logs"]
+    assert {row["app_name"] for row in history} == {"Token Backend"}
+
+
 def test_try_it_rows_are_marked_with_their_source_and_app(
     client, admin_headers, participant_headers, farmer_endpoints, db_session, monkeypatch
 ):

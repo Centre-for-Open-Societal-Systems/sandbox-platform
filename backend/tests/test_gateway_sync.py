@@ -309,3 +309,23 @@ def test_apisix_reader_reports_the_app_key_header():
     })
     route = gateway._read_apisix(client).routes[0]
     assert (route.id, route.auth_header, route.key_header) == ("r1", "Authorization", "apikey")
+
+
+def test_apisix_reader_merges_the_plugins_a_route_shares():
+    """The partner routes hold only their rate limit; the token check sits on the service
+    (ADC) or on a plugin config (ApisixPluginConfig)."""
+    client = _client({
+        "/apisix/admin/services": {"total": 1, "list": [{"value": {
+            "id": "s1", "name": "keys", "plugins": {"openid-connect": {}}}}]},
+        "/apisix/admin/plugin_configs": {"total": 1, "list": [{"value": {
+            "id": "pc1", "plugins": {"openid-connect": {}}}}]},
+        "/apisix/admin/routes": {"total": 3, "list": [
+            {"value": {"id": "r1", "uri": "/keys/:id", "methods": ["GET"], "service_id": "s1",
+                       "plugins": {"limit-count": {}}}},
+            {"value": {"id": "r2", "uri": "/ping", "methods": ["GET"], "plugin_config_id": "pc1",
+                       "plugins": {"limit-count": {}}}},
+            {"value": {"id": "r3", "uri": "/open", "methods": ["GET"], "plugins": {"limit-count": {}}}},
+        ]},
+    })
+    routes = {route.id: route.auth_header for route in gateway._read_apisix(client).routes}
+    assert routes == {"r1": "Authorization", "r2": "Authorization", "r3": None}
