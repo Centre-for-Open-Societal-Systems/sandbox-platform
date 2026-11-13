@@ -1,5 +1,6 @@
 // OAN sandbox CI/CD: sandbox-platform@develop + the latest oan-helm chart on the
-// dev k3s VM (release `sandbox`, namespace develop), images in Amazon ECR.
+// oan-services-dev k3s VM (release oan-sandbox-1-1794475648, namespace sandbox,
+// APISIX ingress), images in Amazon ECR.
 //
 //   1. Versions  image tag = develop commit; chart = newest oan-helm release tag
 //                `oan-sandbox-*` (or CHART_REF), else oan-helm main, pulled fresh
@@ -23,7 +24,8 @@
 //   aws-ecr-creds   AWS key for ECR: either kind "AWS Credentials" or
 //                   "Username with password" (access key id / secret access key);
 //                   permissions in deployment/jenkins/ecr-policy.json
-//   sandbox-vm-ssh  SSH username + private key for the VM (sandbox-platform-dev.pem)
+//   oan-services-dev-ssh  SSH username (ubuntu) + private key for the VM
+//                   (oan-services-dev.pem)
 //   ghcr-creds      only with PUSH_GHCR: username + PAT (write:packages)
 
 // Exposes AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY from the aws-ecr-creds credential,
@@ -80,8 +82,11 @@ pipeline {
     GHCR_PREFIX        = 'ghcr.io/centre-for-open-societal-systems/oan-sandbox'
     OAN_HELM_REPO      = 'https://github.com/Centre-for-Open-Societal-Systems/oan-helm.git'
     SANDBOX_HOSTNAME   = 'sandbox.development.oanstaging.com'
-    SSH_HOST           = 'ec2-13-233-3-96.ap-south-1.compute.amazonaws.com'
-    NAMESPACE          = 'develop'
+    SSH_HOST           = 'ec2-13-234-239-132.ap-south-1.compute.amazonaws.com'
+    NAMESPACE          = 'sandbox'
+    RELEASE            = 'oan-sandbox-1-1794475648'
+    // The chart has no Ingress; deploy.sh applies one for this class.
+    INGRESS_CLASS      = 'apisix'
     // AWS CLI in a container: nothing to install on the agent.
     AWS = 'docker run --rm -i -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN -e AWS_REGION -e AWS_DEFAULT_REGION amazon/aws-cli:2.15.0'
     // Registry logins stay in this workspace, not in the agent's ~/.docker.
@@ -230,7 +235,7 @@ pipeline {
       when { expression { env.BRANCH_NAME == null || env.BRANCH_NAME == 'develop' } }
       steps {
         script { withAws { withCredentials([
-          sshUserPrivateKey(credentialsId: 'sandbox-vm-ssh', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER'),
+          sshUserPrivateKey(credentialsId: 'oan-services-dev-ssh', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER'),
         ]) {
           sh '''
             # The VM's host keys are pinned in the repo (works on any OpenSSH; accept-new
@@ -238,7 +243,7 @@ pipeline {
             #   ssh-keyscan -t ed25519,ecdsa,rsa $SSH_HOST > deployment/jenkins/known_hosts
             SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$WORKSPACE/deployment/jenkins/known_hosts -o ServerAliveInterval=30 $SSH_USER@$SSH_HOST"
 
-            # ECR passwords last 12 hours: every run (cron every 15 minutes) renews the
+            # ECR passwords last 12 hours: every run (cron every 6 hours) renews the
             # pull Secret, so pods restarted later can still pull.
             $AWS ecr get-login-password | $SSH "kubectl -n $NAMESPACE create secret docker-registry ecr-pull \
               --docker-server=$ECR_REGISTRY --docker-username=AWS --docker-password=\\"\\$(cat)\\" \
@@ -249,7 +254,8 @@ pipeline {
               | $SSH 'rm -rf ~/oan-deploy && mkdir -p ~/oan-deploy && tar -xzf - -C ~/oan-deploy'
 
             $SSH "API_IMAGE='$API_IMAGE' WEB_IMAGE='$WEB_IMAGE' CHART_DIR=\\$HOME/oan-deploy/oan-sandbox \
-              CHART_ID='$CHART_ID' HOST='$SANDBOX_HOSTNAME' NAMESPACE='$NAMESPACE' PULL_SECRET=ecr-pull \
+              CHART_ID='$CHART_ID' HOST='$SANDBOX_HOSTNAME' NAMESPACE='$NAMESPACE' RELEASE='$RELEASE' \
+              INGRESS_CLASS='$INGRESS_CLASS' PULL_SECRET=ecr-pull \
               FORCE='$FORCE_DEPLOY' bash -s" < deployment/jenkins/deploy.sh
           '''
         } } }

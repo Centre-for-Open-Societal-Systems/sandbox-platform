@@ -3,14 +3,51 @@
 #
 #   ssh vm "API_IMAGE=... WEB_IMAGE=... CHART_DIR=... CHART_ID=... HOST=... bash -s" < deploy.sh
 #
-# Upgrades the `sandbox` release to the oan-helm chart in $CHART_DIR with the given
-# images, unless that chart and those images are already deployed. The release
-# (Secret, PostgreSQL, Ingress) is created by the Ansible playbook.
+# Upgrades $RELEASE to the oan-helm chart in $CHART_DIR with the given images,
+# unless that chart and those images are already deployed. The release itself
+# (Secret, database settings) must already exist.
+#
+# With INGRESS_CLASS set (e.g. apisix), also applies an Ingress for $HOST:
+# /oan -> API, / -> web. The chart only ships an Istio VirtualService.
 set -euo pipefail
 : "${API_IMAGE:?}" "${WEB_IMAGE:?}" "${CHART_DIR:?}" "${CHART_ID:?}" "${HOST:?}"
 NAMESPACE=${NAMESPACE:-develop}
 RELEASE=${RELEASE:-sandbox}
 export KUBECONFIG=${KUBECONFIG:-$HOME/.kube/config}
+
+# Idempotent, so it runs even when the release is up to date.
+if [ -n "${INGRESS_CLASS:-}" ]; then
+  # Prefix, not ImplementationSpecific: APISIX treats the latter as an exact match.
+  kubectl -n "$NAMESPACE" apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: $RELEASE
+  labels:
+    app.kubernetes.io/instance: $RELEASE
+    app.kubernetes.io/managed-by: sandbox-platform-jenkins
+spec:
+  ingressClassName: $INGRESS_CLASS
+  rules:
+    - host: $HOST
+      http:
+        paths:
+          - path: /oan
+            pathType: Prefix
+            backend:
+              service:
+                name: $RELEASE-api
+                port:
+                  number: 80
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: $RELEASE-web
+                port:
+                  number: 80
+EOF
+fi
 
 # The release description records what was deployed, e.g.
 # "oan-helm main@1a2b3c4d5e6f chart 1.0.0-dev.6 api=<tag> web=<tag>".
@@ -38,9 +75,12 @@ helm -n "$NAMESPACE" upgrade "$RELEASE" "$CHART_DIR" --reset-then-reuse-values \
   "${pull_args[@]}" --description "$want" --wait --timeout 15m
 kubectl -n "$NAMESPACE" get pods -o wide
 
-# Through Traefik on this node, independent of DNS and the security group.
+# Through the ingress controller on this node (Traefik, or APISIX on hostPort
+# 80/443), independent of DNS and the security group. HTTPS first; plain HTTP
+# when the controller has no certificate for $HOST.
 for _ in $(seq 30); do
-  if curl -skf --resolve "$HOST:443:127.0.0.1" "https://$HOST/oan/health"; then
+  if curl -skf --max-time 10 --resolve "$HOST:443:127.0.0.1" "https://$HOST/oan/health" \
+     || curl -sf --max-time 10 --resolve "$HOST:80:127.0.0.1" "http://$HOST/oan/health"; then
     echo
     exit 0
   fi
