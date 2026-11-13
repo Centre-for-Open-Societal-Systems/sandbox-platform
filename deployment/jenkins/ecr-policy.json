@@ -23,7 +23,7 @@
         "ecr:PutImage"
       ],
       "Resource": [
-        "arn:aws:ecr:ap-south-1:*:repository/oan/sandbox-platform/*",
+        "arn:aws:ecr:ap-south-1:*:repository/eoan/sandbox-platform/*",
         "arn:aws:ecr:ap-south-1:*:repository/oan-sandbox-*"
       ]
     }

@@ -7,7 +7,7 @@
 //                chart's version (e.g. 1.0.0-dev.19), plus the develop commit
 //   2. Registry  ECR login; creates the repositories if missing; skips the build
 //                when that chart version and that commit are both already in ECR
-//                (oan/sandbox-platform/oan-sandbox-api, oan/sandbox-platform/oan-sandbox-web)
+//                (eoan/sandbox-platform/oan-sandbox-api, eoan/sandbox-platform/oan-sandbox-web)
 //   3. Test + build + push the API and web images (only when needed)
 //   4. Deploy    refresh the ECR pull Secret, then helm upgrade with that chart and
 //                those images, unless the release already runs exactly them
@@ -80,8 +80,8 @@ pipeline {
   environment {
     AWS_REGION         = 'ap-south-1'
     AWS_DEFAULT_REGION = 'ap-south-1'
-    // ECR repositories oan/sandbox-platform/oan-sandbox-api, oan/sandbox-platform/oan-sandbox-web
-    ECR_REPO_PREFIX    = 'oan/sandbox-platform/oan-sandbox'
+    // ECR repositories eoan/sandbox-platform/oan-sandbox-api, eoan/sandbox-platform/oan-sandbox-web
+    ECR_REPO_PREFIX    = 'eoan/sandbox-platform/oan-sandbox'
     GHCR_PREFIX        = 'ghcr.io/centre-for-open-societal-systems/oan-sandbox'
     OAN_HELM_REPO      = 'https://github.com/Centre-for-Open-Societal-Systems/oan-helm.git'
     SANDBOX_HOSTNAME   = 'sandbox.development.oanstaging.com'
@@ -119,7 +119,7 @@ pipeline {
           // Hash of the chart directory only: changes elsewhere in oan-helm do not redeploy.
           def tree = sh(returnStdout: true, script: 'git -C oan-helm rev-parse --short=12 HEAD:charts/oan-sandbox').trim()
           env.CHART_ID = "oan-helm ${ref} chart ${version} tree ${tree}"
-          // Images carry the chart version: oan/sandbox-platform/oan-sandbox-api:1.0.0-dev.19
+          // Images carry the chart version: eoan/sandbox-platform/oan-sandbox-api:1.0.0-dev.19
           if (!(version ==~ /[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}/)) {
             error("Chart version '${version}' is not a valid image tag")
           }
