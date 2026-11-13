@@ -76,7 +76,9 @@ echo "Deploying: ${want}"
 # VM's instance role, so no pull Secret is needed. The empty lists also clear the
 # ecr-pull Secret that earlier releases reused through --reset-then-reuse-values.
 # PULL_SECRET still names a Secret for clusters without the credential provider.
-pull_args=(--set 'api.imagePullSecrets={}' --set 'web.imagePullSecrets={}')
+# --set-json, not --set 'x={}': Helm 3 merges --set {} with the reused values as
+# [""], which the API server rejects (imagePullSecrets entries must be objects).
+pull_args=(--set-json 'api.imagePullSecrets=[]' --set-json 'web.imagePullSecrets=[]')
 if [ -n "${PULL_SECRET:-}" ]; then
   pull_args=(--set "api.imagePullSecrets[0].name=$PULL_SECRET" --set "web.imagePullSecrets[0].name=$PULL_SECRET")
 fi
