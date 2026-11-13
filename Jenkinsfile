@@ -9,10 +9,14 @@
 //                when that chart version and that commit are both already in ECR
 //                (eoan/sandbox-platform/oan-sandbox-api, eoan/sandbox-platform/oan-sandbox-web)
 //   3. Test + build + push the API and web images (only when needed)
-//   4. Deploy    refresh the ECR pull Secret, then helm upgrade with that chart and
-//                those images, unless the release already runs exactly them
-//                (deployment/jenkins/deploy.sh). Images are deployed by digest: the
-//                chart-version tag is reused by every build of that version.
+//   4. Deploy    helm upgrade with that chart and those images, unless the release
+//                already runs exactly them (deployment/jenkins/deploy.sh). Images
+//                are deployed by digest: the chart-version tag is reused by every
+//                build of that version.
+//
+// Pods pull from ECR without a pull Secret: k3s on the VM runs AWS's
+// ecr-credential-provider with the instance role oan-services-dev-ecr-pull (the same
+// way a2c and grievance pull). That role needs pull access to eoan/sandbox-platform/*.
 //
 // Builds start when a PR is merged into develop. The 6-hourly timer re-pulls
 // oan-helm, so a new chart release, or a change to
@@ -62,9 +66,8 @@ pipeline {
   }
 
   // A merged PR (push to develop) starts the build through the GitHub organization
-  // folder's webhook; no polling. The timer runs develop every 6 hours only to renew
-  // the ECR pull Secret (it expires after 12 hours) and pick up a new oan-helm chart;
-  // it rebuilds or redeploys nothing that is already up to date.
+  // folder's webhook; no polling. The timer runs develop every 6 hours only to pick
+  // up a new oan-helm chart; it rebuilds or redeploys nothing that is already up to date.
   triggers {
     cron(env.BRANCH_NAME == null || env.BRANCH_NAME == 'develop' ? 'H H/6 * * *' : '')
   }
@@ -257,12 +260,6 @@ pipeline {
             #   ssh-keyscan -t ed25519,ecdsa,rsa $SSH_HOST > deployment/jenkins/known_hosts
             SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$WORKSPACE/deployment/jenkins/known_hosts -o ServerAliveInterval=30 $SSH_USER@$SSH_HOST"
 
-            # ECR passwords last 12 hours: every run (cron every 6 hours) renews the
-            # pull Secret, so pods restarted later can still pull.
-            $AWS ecr get-login-password | $SSH "kubectl -n $NAMESPACE create secret docker-registry ecr-pull \
-              --docker-server=$ECR_REGISTRY --docker-username=AWS --docker-password=\\"\\$(cat)\\" \
-              --dry-run=client -o yaml | kubectl apply -f -"
-
             # The chart-version tag moves on every rebuild, so deploy the exact digests.
             API_DIGEST=$($AWS ecr describe-images --repository-name "$ECR_REPO_PREFIX-api" \
               --image-ids imageTag="$TAG" --query 'imageDetails[0].imageDigest' --output text | tr -d '\\r')
@@ -277,7 +274,7 @@ pipeline {
             $SSH "API_IMAGE='$API_IMAGE' WEB_IMAGE='$WEB_IMAGE' API_DIGEST='$API_DIGEST' WEB_DIGEST='$WEB_DIGEST' \
               CHART_DIR=\\$HOME/oan-deploy/oan-sandbox \
               CHART_ID='$CHART_ID' HOST='$SANDBOX_HOSTNAME' NAMESPACE='$NAMESPACE' RELEASE='$RELEASE' \
-              INGRESS_CLASS='$INGRESS_CLASS' PULL_SECRET=ecr-pull \
+              INGRESS_CLASS='$INGRESS_CLASS' \
               FORCE='$FORCE_DEPLOY' bash -s" < deployment/jenkins/deploy.sh
           '''
         } } }

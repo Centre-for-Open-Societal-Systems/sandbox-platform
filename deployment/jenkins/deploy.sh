@@ -72,7 +72,11 @@ fi
 echo "Deployed: ${have}"
 echo "Deploying: ${want}"
 
-pull_args=()
+# The node pulls from ECR itself: k3s runs AWS's ecr-credential-provider with the
+# VM's instance role, so no pull Secret is needed. The empty lists also clear the
+# ecr-pull Secret that earlier releases reused through --reset-then-reuse-values.
+# PULL_SECRET still names a Secret for clusters without the credential provider.
+pull_args=(--set 'api.imagePullSecrets={}' --set 'web.imagePullSecrets={}')
 if [ -n "${PULL_SECRET:-}" ]; then
   pull_args=(--set "api.imagePullSecrets[0].name=$PULL_SECRET" --set "web.imagePullSecrets[0].name=$PULL_SECRET")
 fi
