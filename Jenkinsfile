@@ -2,15 +2,17 @@
 // oan-services-dev k3s VM (release oan-sandbox-1-1794475648, namespace sandbox,
 // APISIX ingress), images in Amazon ECR.
 //
-//   1. Versions  image tag = develop commit; chart = newest oan-helm release tag
-//                `oan-sandbox-*` (or CHART_REF), else oan-helm main, pulled fresh
-//                on every run
+//   1. Versions  chart = newest oan-helm release tag `oan-sandbox-*` (or CHART_REF),
+//                else oan-helm main, pulled fresh on every run; image tag = that
+//                chart's version (e.g. 1.0.0-dev.19), plus the develop commit
 //   2. Registry  ECR login; creates the repositories if missing; skips the build
-//                when that commit's images are already in ECR
+//                when that chart version and that commit are both already in ECR
+//                (oan/sandbox-platform/oan-sandbox-api, oan/sandbox-platform/oan-sandbox-web)
 //   3. Test + build + push the API and web images (only when needed)
 //   4. Deploy    refresh the ECR pull Secret, then helm upgrade with that chart and
 //                those images, unless the release already runs exactly them
-//                (deployment/jenkins/deploy.sh)
+//                (deployment/jenkins/deploy.sh). Images are deployed by digest: the
+//                chart-version tag is reused by every build of that version.
 //
 // Builds start when a PR is merged into develop. The 6-hourly timer re-pulls
 // oan-helm, so a new chart release, or a change to
@@ -78,7 +80,8 @@ pipeline {
   environment {
     AWS_REGION         = 'ap-south-1'
     AWS_DEFAULT_REGION = 'ap-south-1'
-    ECR_REPO_PREFIX    = 'oan-sandbox'          // ECR repositories oan-sandbox-api, oan-sandbox-web
+    // ECR repositories oan/sandbox-platform/oan-sandbox-api, oan/sandbox-platform/oan-sandbox-web
+    ECR_REPO_PREFIX    = 'oan/sandbox-platform/oan-sandbox'
     GHCR_PREFIX        = 'ghcr.io/centre-for-open-societal-systems/oan-sandbox'
     OAN_HELM_REPO      = 'https://github.com/Centre-for-Open-Societal-Systems/oan-helm.git'
     SANDBOX_HOSTNAME   = 'sandbox.development.oanstaging.com'
@@ -97,7 +100,7 @@ pipeline {
     stage('Versions') {
       steps {
         script {
-          env.TAG = sh(returnStdout: true, script: 'git rev-parse --short=12 HEAD').trim()
+          env.COMMIT_TAG = sh(returnStdout: true, script: 'git rev-parse --short=12 HEAD').trim()
 
           def ref = params.CHART_REF?.trim()
           if (!ref) {
@@ -116,7 +119,12 @@ pipeline {
           // Hash of the chart directory only: changes elsewhere in oan-helm do not redeploy.
           def tree = sh(returnStdout: true, script: 'git -C oan-helm rev-parse --short=12 HEAD:charts/oan-sandbox').trim()
           env.CHART_ID = "oan-helm ${ref} chart ${version} tree ${tree}"
-          currentBuild.description = "${env.TAG} / chart ${version} (${ref})"
+          // Images carry the chart version: oan/sandbox-platform/oan-sandbox-api:1.0.0-dev.19
+          if (!(version ==~ /[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}/)) {
+            error("Chart version '${version}' is not a valid image tag")
+          }
+          env.TAG = version
+          currentBuild.description = "${env.TAG} (${env.COMMIT_TAG}) / chart ${ref}"
           echo "Chart: ${env.CHART_ID}"
         }
       }
@@ -139,9 +147,13 @@ pipeline {
                        --image-scanning-configuration scanOnPush=true >/dev/null
               done
             '''
+            // Build when this chart version or this commit is missing: a new develop
+            // commit under the same chart version rebuilds and moves the version tag.
             def pushed = sh(returnStatus: true, script: '''
               for repo in "$ECR_REPO_PREFIX-api" "$ECR_REPO_PREFIX-web"; do
-                $AWS ecr describe-images --repository-name "$repo" --image-ids imageTag="$TAG" >/dev/null 2>&1 || exit 1
+                for t in "$TAG" "$COMMIT_TAG"; do
+                  $AWS ecr describe-images --repository-name "$repo" --image-ids imageTag="$t" >/dev/null 2>&1 || exit 1
+                done
               done
             ''') == 0
             env.NEED_BUILD = (params.FORCE_BUILD || !pushed).toString()
@@ -192,13 +204,15 @@ pipeline {
         sh '''
           api_latest="$ECR_REGISTRY/$ECR_REPO_PREFIX-api:develop"
           web_latest="$ECR_REGISTRY/$ECR_REPO_PREFIX-web:develop"
-          docker build -f docker/sandbox-api/Dockerfile -t "$API_IMAGE" -t "$api_latest" .
+          api_commit="$ECR_REGISTRY/$ECR_REPO_PREFIX-api:$COMMIT_TAG"
+          web_commit="$ECR_REGISTRY/$ECR_REPO_PREFIX-web:$COMMIT_TAG"
+          docker build -f docker/sandbox-api/Dockerfile -t "$API_IMAGE" -t "$api_commit" -t "$api_latest" .
           # The browser API URL is built into the web image (one image per environment).
-          docker build -t "$WEB_IMAGE" -t "$web_latest" \
+          docker build -t "$WEB_IMAGE" -t "$web_commit" -t "$web_latest" \
             --build-arg NEXT_PUBLIC_API_BASE_URL="https://$SANDBOX_HOSTNAME/oan" \
             --build-arg NEXT_PUBLIC_DEFAULT_COUNTRY=ET \
             --build-arg NEXT_PUBLIC_SITE_NAME="Open Agri Net" ui
-          for image in "$API_IMAGE" "$api_latest" "$WEB_IMAGE" "$web_latest"; do
+          for image in "$API_IMAGE" "$api_commit" "$api_latest" "$WEB_IMAGE" "$web_commit" "$web_latest"; do
             docker push "$image"
           done
         '''
@@ -249,11 +263,19 @@ pipeline {
               --docker-server=$ECR_REGISTRY --docker-username=AWS --docker-password=\\"\\$(cat)\\" \
               --dry-run=client -o yaml | kubectl apply -f -"
 
+            # The chart-version tag moves on every rebuild, so deploy the exact digests.
+            API_DIGEST=$($AWS ecr describe-images --repository-name "$ECR_REPO_PREFIX-api" \
+              --image-ids imageTag="$TAG" --query 'imageDetails[0].imageDigest' --output text | tr -d '\\r')
+            WEB_DIGEST=$($AWS ecr describe-images --repository-name "$ECR_REPO_PREFIX-web" \
+              --image-ids imageTag="$TAG" --query 'imageDetails[0].imageDigest' --output text | tr -d '\\r')
+            echo "Digests: api $API_DIGEST, web $WEB_DIGEST"
+
             # The chart at the resolved oan-helm ref.
             tar -C oan-helm/charts -czf - oan-sandbox \
               | $SSH 'rm -rf ~/oan-deploy && mkdir -p ~/oan-deploy && tar -xzf - -C ~/oan-deploy'
 
-            $SSH "API_IMAGE='$API_IMAGE' WEB_IMAGE='$WEB_IMAGE' CHART_DIR=\\$HOME/oan-deploy/oan-sandbox \
+            $SSH "API_IMAGE='$API_IMAGE' WEB_IMAGE='$WEB_IMAGE' API_DIGEST='$API_DIGEST' WEB_DIGEST='$WEB_DIGEST' \
+              CHART_DIR=\\$HOME/oan-deploy/oan-sandbox \
               CHART_ID='$CHART_ID' HOST='$SANDBOX_HOSTNAME' NAMESPACE='$NAMESPACE' RELEASE='$RELEASE' \
               INGRESS_CLASS='$INGRESS_CLASS' PULL_SECRET=ecr-pull \
               FORCE='$FORCE_DEPLOY' bash -s" < deployment/jenkins/deploy.sh
@@ -268,7 +290,7 @@ pipeline {
       sh 'rm -rf "$DOCKER_CONFIG"'
     }
     success {
-      echo "https://${env.SANDBOX_HOSTNAME}  ${env.CHART_ID}  images ${env.TAG}"
+      echo "https://${env.SANDBOX_HOSTNAME}  ${env.CHART_ID}  images ${env.TAG} (${env.COMMIT_TAG})"
     }
   }
 }

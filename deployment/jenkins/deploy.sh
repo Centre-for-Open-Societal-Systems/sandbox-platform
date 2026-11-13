@@ -49,9 +49,21 @@ spec:
 EOF
 fi
 
+# API_DIGEST / WEB_DIGEST (sha256:...), when set, pin the images: the chart renders
+# repository@digest. Empty clears a digest left on the release, so the tag is used.
+API_DIGEST=${API_DIGEST:-}
+WEB_DIGEST=${WEB_DIGEST:-}
+for d in "$API_DIGEST" "$WEB_DIGEST"; do
+  if [ -n "$d" ] && ! [[ $d =~ ^sha256:[a-f0-9]{64}$ ]]; then
+    echo "Invalid image digest: $d" >&2
+    exit 1
+  fi
+done
+short() { if [ -n "$1" ]; then printf '@%s' "${1:7:12}"; fi; }
+
 # The release description records what was deployed, e.g.
-# "oan-helm main@1a2b3c4d5e6f chart 1.0.0-dev.6 api=<tag> web=<tag>".
-want="$CHART_ID api=${API_IMAGE##*:} web=${WEB_IMAGE##*:}"
+# "oan-helm main@1a2b3c4d5e6f chart 1.0.0-dev.6 api=<tag>@<digest> web=<tag>@<digest>".
+want="$CHART_ID api=${API_IMAGE##*:}$(short "$API_DIGEST") web=${WEB_IMAGE##*:}$(short "$WEB_DIGEST")"
 have=$(helm -n "$NAMESPACE" history "$RELEASE" --max 1 -o json | jq -r '.[0] | "\(.status) \(.description)"')
 if [ "$have" = "deployed $want" ] && [ "${FORCE:-false}" != true ]; then
   echo "Up to date: $want"
@@ -69,9 +81,9 @@ fi
 # set by Ansible on the release (hostname, database, gateway, Secret name).
 helm -n "$NAMESPACE" upgrade "$RELEASE" "$CHART_DIR" --reset-then-reuse-values \
   --set api.image.repository="${API_IMAGE%:*}" --set-string api.image.tag="${API_IMAGE##*:}" \
-  --set api.image.pullPolicy=IfNotPresent \
+  --set-string api.image.digest="$API_DIGEST" --set api.image.pullPolicy=IfNotPresent \
   --set web.image.repository="${WEB_IMAGE%:*}" --set-string web.image.tag="${WEB_IMAGE##*:}" \
-  --set web.image.pullPolicy=IfNotPresent \
+  --set-string web.image.digest="$WEB_DIGEST" --set web.image.pullPolicy=IfNotPresent \
   "${pull_args[@]}" --description "$want" --wait --timeout 15m
 kubectl -n "$NAMESPACE" get pods -o wide
 
