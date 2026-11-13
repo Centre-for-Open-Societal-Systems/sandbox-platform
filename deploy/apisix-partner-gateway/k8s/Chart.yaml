@@ -3,5 +3,5 @@ name: oan-partner-gateway
 description: APISIX Ingress Controller routes for the OAN partner APIs called by sandbox apps
   (OAuth 2.0 client credentials, app token in X-Partner-Token)
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: develop

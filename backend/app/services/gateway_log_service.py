@@ -1,11 +1,20 @@
 """Store the call records APISIX reports for app keys (the logs callback).
 
-Each app's consumer carries ``http-logger`` (``app_gateway_service``), which
-posts batches of ``LOG_FORMAT`` records to ``POST /internal/gateway/logs``.
-They become API history rows with ``source`` DIRECT, so a participant sees
-the calls their own servers make, not only the ones made from try-it.
+APISIX's ``http-logger`` posts batches of ``LOG_FORMAT`` records to
+``POST /internal/gateway/logs``. They become API history rows with ``source``
+DIRECT, so a participant sees the calls their own servers make, not only the
+ones made from try-it. Who carries the plugin depends on the mode:
 
-* only consumers of sandbox apps (``oanapp_*``) are stored;
+* app keys (GATEWAY_PARTNER_AUTH ``apikey`` / ``keycloak``): each app's
+  consumer (``app_gateway_service``); the record names it in ``consumer``;
+* app OAuth tokens (``oauth``): there is no consumer, so the partner routes
+  carry the plugin (the ``oan-partner-gateway`` chart, ``callLog``) and name
+  the app in ``app``: the token's ``oan_app``, which the route puts in
+  ``X-OAN-App`` once the token is verified.
+
+* only calls of sandbox apps are stored: a consumer ``oanapp_*`` or an
+  ``app`` id the sandbox knows. A call the gateway refused before it knew
+  the app (no token, a bad token) has neither and is skipped;
 * try-it calls carry ``X-OAN-Sandbox-Transaction`` and are skipped: the
   sandbox has already recorded them, with request and response bodies;
 * APISIX's request id is unique, so a batch delivered twice is stored once;
@@ -20,6 +29,7 @@ user agent.
 from __future__ import annotations
 
 import re
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qsl, urlencode
@@ -42,13 +52,31 @@ CONSUMER_PREFIX = "oanapp_"
 _PARAM = re.compile(r"\\\{[^/]*?\\\}")
 
 
+def _consumer(record: dict[str, Any]) -> str | None:
+    """The sandbox app consumer of a record (app-key modes)."""
+    value = str(record.get("consumer") or "")
+    return value if value.startswith(CONSUMER_PREFIX) else None
+
+
+def _app_uid(record: dict[str, Any]) -> str | None:
+    """The app a route named itself (oauth mode), as the canonical id; None when it is
+    missing or not an id."""
+    value = str(record.get("app") or "").strip()
+    if not value:
+        return None
+    try:
+        return str(uuid.UUID(value))
+    except ValueError:
+        return None
+
+
 def ingest(db: Session, records: list[dict[str, Any]]) -> dict[str, int]:
     """Store a batch; returns how many rows were stored and skipped."""
     wanted = [
         r
         for r in records
         if isinstance(r, dict)
-        and str(r.get("consumer") or "").startswith(CONSUMER_PREFIX)
+        and (_consumer(r) or _app_uid(r))
         and not r.get("sandbox_txn")
         and r.get("request_id")
     ]
@@ -62,18 +90,27 @@ def ingest(db: Session, records: list[dict[str, Any]]) -> dict[str, int]:
             select(ApiLog.gateway_request_id).where(ApiLog.gateway_request_id.in_(request_ids))
         ).scalars()
     )
+    consumers = {c for r in wanted if (c := _consumer(r))}
+    uids = {u for r in wanted if not _consumer(r) and (u := _app_uid(r))}
     rows = db.execute(
         select(ParticipantApp, Participant)
         .join(Participant, Participant.participant_id == ParticipantApp.participant_id)
-        .where(ParticipantApp.gateway_consumer.in_({str(r["consumer"]) for r in wanted}))
+        .where(
+            or_(
+                ParticipantApp.gateway_consumer.in_(consumers),
+                ParticipantApp.unique_id.in_(uids),
+            )
+        )
     ).all()
-    apps = {app.gateway_consumer: (app, participant) for app, participant in rows}
+    by_consumer = {app.gateway_consumer: (app, participant) for app, participant in rows}
+    by_uid = {str(app.unique_id): (app, participant) for app, participant in rows}
     matcher = _EndpointMatcher(db)
 
     stored = 0
     for record in wanted:
         request_id = str(record["request_id"])[:64]
-        owner = apps.get(str(record["consumer"]))
+        consumer = _consumer(record)
+        owner = by_consumer.get(consumer) if consumer else by_uid.get(_app_uid(record) or "")
         if request_id in seen or owner is None:
             skipped += 1
             continue

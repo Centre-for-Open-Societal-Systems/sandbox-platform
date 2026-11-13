@@ -23,9 +23,13 @@ everybody and need no grant.
 With GATEWAY_PARTNER_AUTH=oauth nothing is written to the gateway: the routes
 check the app's Keycloak token, so the sandbox only reads the routes (a viewer
 admin key is enough) and puts the granted route ids in the token's
-``oan_routes``; each active key is a Keycloak client instead. The per-app
-consumer plugins above (IP whitelist, per-product limits, http-logger) do not
-apply then; the routes limit calls per app themselves.
+``oan_routes``; each active key is a Keycloak client instead. What the
+consumer plugins above did, the routes do from the token: the app's IP
+whitelist (``oan_ips``) and the limits of its products (``oan_limit_minute``,
+``oan_limit_day``, with GATEWAY_RATE_LIMIT_ENABLED), and they carry
+``http-logger`` themselves (``gateway_log_service``). A change reaches the
+gateway with the next token: one already issued keeps its values until it
+expires (five minutes).
 
 Every app belongs to one environment (``ParticipantApp.environment``) and has
 its own keys there: a UAT app works only on UAT, a production app (made with
@@ -170,6 +174,8 @@ def _sync_oauth_clients(app: ParticipantApp, owner: Participant | None) -> None:
     secret) in the app's environment's realm; its token names the owner, the app, the
     app's environment and the routes of the app's products (the same list as the
     consumer's whitelist). ``owner`` None: every client of the app goes."""
+    # What a consumer held in the app-key modes travels in the token: the routes read it.
+    per_minute, per_day = effective_limits(app) if settings.GATEWAY_RATE_LIMIT_ENABLED else (None, None)
     for credential in app.credentials:
         api_key = crypto.decrypt(credential.api_key_encrypted)
         if owner is None or not credential_is_live(credential):
@@ -185,6 +191,11 @@ def _sync_oauth_clients(app: ParticipantApp, owner: Participant | None) -> None:
                 "oan_app": str(app.unique_id),
                 "oan_environments": [str(app.environment).lower()],
                 "oan_routes": list(app.gateway_routes or []),
+                # Always written, so a cleared whitelist or limit also clears the claim:
+                # an empty list = any address, "0" = no limit of its own.
+                "oan_ips": list(app.allowed_ips or []),
+                "oan_limit_minute": str(per_minute or 0),
+                "oan_limit_day": str(per_day or 0),
             },
         )
 
