@@ -61,6 +61,12 @@ pipeline {
   agent { label 'docker || vpn-agent || vpn-agent2' }
 
   options {
+    // The oan-ci-aws agents are Spot instances: when EC2 reclaims one mid-build,
+    // rerun the whole pipeline on a new agent (a stage-level retry would stay on the
+    // dead one). Reruns are cheap: Registry skips images already in ECR and
+    // deploy.sh skips a release already up to date (and rolls back one left
+    // pending-upgrade by the cut-off deploy).
+    retry(count: 2, conditions: [agent(), nonresumable()])
     disableConcurrentBuilds()
     timestamps()
     timeout(time: 90, unit: 'MINUTES')

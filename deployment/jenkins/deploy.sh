@@ -32,6 +32,37 @@ short() { if [ -n "$1" ]; then printf '@%s' "${1:7:12}"; fi; }
 # The release description records what was deployed, e.g.
 # "sandbox-platform chart 1.0.0-dev.19 helm tree 1a2b3c4d5e6f api=<tag>@<digest> web=<tag>@<digest>".
 want="$CHART_ID api=${API_IMAGE##*:}$(short "$API_DIGEST") web=${WEB_IMAGE##*:}$(short "$WEB_DIGEST")"
+
+# A deploy cut off mid-upgrade (e.g. the Jenkins agent was a Spot instance that EC2
+# reclaimed, dropping this SSH session) leaves the release pending-upgrade, and Helm
+# then refuses every upgrade ("another operation is in progress"). A pending revision
+# older than the upgrade timeout below is no longer running: roll back to the last
+# good revision, then upgrade as usual. A younger one may still be running: stop.
+PENDING_STALE_SECONDS=$((16 * 60))
+latest=$(helm -n "$NAMESPACE" history "$RELEASE" --max 1 -o json | jq -r '.[0] | "\(.revision) \(.status)"')
+read -r latest_rev latest_status <<<"$latest"
+case "$latest_status" in
+  pending-install|pending-upgrade|pending-rollback)
+    created=$(kubectl -n "$NAMESPACE" get secret "sh.helm.release.v1.$RELEASE.v$latest_rev" \
+      -o jsonpath='{.metadata.creationTimestamp}')
+    age=$(( $(date +%s) - $(date -d "$created" +%s) ))
+    if [ "$age" -lt "$PENDING_STALE_SECONDS" ]; then
+      echo "Release $RELEASE revision $latest_rev is $latest_status since ${age}s ago:" \
+        "another deploy may still be running. Retry after ${PENDING_STALE_SECONDS}s." >&2
+      exit 1
+    fi
+    good=$(helm -n "$NAMESPACE" history "$RELEASE" --max 50 -o json \
+      | jq -r '[.[] | select(.status == "deployed" or .status == "superseded")] | last | .revision // empty')
+    if [ -z "$good" ]; then
+      echo "Release $RELEASE is stuck $latest_status (revision $latest_rev) with no good revision" \
+        "to roll back to; fix it by hand." >&2
+      exit 1
+    fi
+    echo "Release $RELEASE revision $latest_rev stuck $latest_status for ${age}s; rolling back to revision $good"
+    helm -n "$NAMESPACE" rollback "$RELEASE" "$good" --wait --timeout 10m
+    ;;
+esac
+
 have=$(helm -n "$NAMESPACE" history "$RELEASE" --max 1 -o json | jq -r '.[0] | "\(.status) \(.description)"')
 if [ "$have" = "deployed $want" ] && [ "${FORCE:-false}" != true ]; then
   echo "Up to date: $want"
