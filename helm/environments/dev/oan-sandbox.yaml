@@ -21,8 +21,9 @@ config:
     user: sandbox
   gateway:
     enabled: true
-    # Dev APISIX, partner routes of chart oan-partner-gateway (deploy/apisix-partner-gateway).
-    uatUrl: https://partner-api-dev.oanstaging.com
+    # Dev APISIX on oan_dev, partner routes of chart oan-partner-gateway (deploy/apisix-partner-gateway).
+    # Served under the *.development.oanstaging.com wildcard (DNS and certificate).
+    uatUrl: https://partner-api.development.oanstaging.com
     sync:
       # oauth only reads the routes (viewer key). The Admin API admits only the IPs in its
       # ip-restriction whitelist, so this cluster's egress IP must be on it.

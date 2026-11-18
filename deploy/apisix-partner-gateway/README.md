@@ -33,7 +33,7 @@ kubectl -n apisix get apisixroutes,apisixupstreams,apisixtls -l app=oan-partner-
 
 | Value | Dev | Notes |
 | --- | --- | --- |
-| `hosts` | `partner-api-dev.oanstaging.com` (to confirm) | **Required** (apps share the gateway and are told apart by host). Public host partners call, DNS to the gateway node. The sandbox's `GATEWAY_UAT_URL` is `https://<host>`. |
+| `hosts` | `partner-api.development.oanstaging.com` (dev) | **Required** (apps share the gateway and are told apart by host). Public host partners call, DNS to the gateway node. The sandbox's `GATEWAY_UAT_URL` is `https://<host>`. |
 | `tls.secretName` | `oan-partner-gateway-tls` | Secret (`tls.crt`, `tls.key`) in the release namespace; APISIX terminates TLS for `hosts` (`ApisixTls`). Empty = no `ApisixTls`. |
 | `keycloak.issuer` | `https://keycloak.development.oanstaging.com/realms/partner` | Must equal the sandbox's realm as written into tokens. |
 | `keycloak.discovery` | empty | `<issuer>/.well-known/openid-configuration` unless APISIX reaches Keycloak elsewhere. |
