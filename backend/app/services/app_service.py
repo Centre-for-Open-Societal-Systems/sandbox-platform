@@ -486,7 +486,7 @@ def try_it_key(db: Session, participant: Participant, app_uid: str) -> str:
 
 #: Token claims the portal shows after "Get token" (the gateway checks these).
 TOKEN_CLAIMS_SHOWN = (
-    "iss", "azp", "iat", "exp", "oan_app", "participant_uid", "oan_environments", "oan_routes",
+    "iss", "aud", "azp", "iat", "exp", "scope", "oan_app", "participant_uid", "oan_environments", "oan_routes",
 )
 
 
@@ -514,6 +514,16 @@ def get_app_token(db: Session, participant: Participant, app_uid: str) -> dict[s
     if settings.GATEWAY_PARTNER_AUTH != "oauth":
         raise ValidationError("App tokens are used only when the gateway checks OAuth app tokens.")
     credential = _newest_key(db, participant, app_uid)
+    if (
+        str(credential.app.environment) == str(Environment.PRODUCTION)
+        and settings.KEYCLOAK_PROD_CLIENT_AUTH == "private-key-jwt"
+    ):
+        raise ValidationError(
+            "Production app tokens are issued only to your own servers: request one with "
+            "grant_type=client_credentials, client_assertion_type="
+            "urn:ietf:params:oauth:client-assertion-type:jwt-bearer and a client_assertion signed with "
+            "the private key of your registered signing key (RFC 7523). The sandbox does not hold that key."
+        )
     client_id = crypto.decrypt(credential.api_key_encrypted)
     with keycloak.use_realm(keycloak.realm_for(credential.app.environment)):
         body = keycloak.request_app_token(client_id, crypto.decrypt(credential.api_secret_encrypted))
@@ -751,6 +761,28 @@ def resync(db: Session, admin: AdminPrincipal, app_id: int) -> AdminAppOut:
     return admin_get(db, app_id)
 
 
+def resync_all(db: Session, admin: AdminPrincipal | None = None) -> dict[str, int]:
+    """Re-write every active app to Keycloak / the gateway, e.g. after GATEWAY_SCOPES,
+    GATEWAY_TOKEN_AUDIENCE, GATEWAY_LEGACY_ROUTE_CLAIM or KEYCLOAK_PROD_CLIENT_AUTH
+    changed. Returns how many apps were synced and how many failed."""
+    apps = db.execute(
+        select(ParticipantApp).where(
+            ParticipantApp.is_deleted.is_(False), ParticipantApp.status == int(AppStatus.ACTIVE)
+        )
+    ).scalars().all()
+    app_gateway_service.sync_apps(db, apps)
+    failed = sum(1 for app in apps if app.gateway_status == str(GatewaySyncStatus.FAILED))
+    result = {"apps": len(apps), "synced": len(apps) - failed, "failed": failed}
+    description = f"Re-synced all active apps: {result['synced']} synced, {failed} failed"
+    if admin is None:
+        audit_service.record(db, Action.APP_GATEWAY_SYNC, actor_name="script", entity="participant_app",
+                             description=description)
+    else:
+        audit_service.record_admin(db, admin, Action.APP_GATEWAY_SYNC, entity="participant_app",
+                                   description=description)
+    return result
+
+
 # ========================================================= serialisation
 def _calls_since(db: Session, app: ParticipantApp, window: timedelta) -> int:
     """Calls the gateway logged for this app in the last ``window`` (what its limits count)."""
@@ -868,6 +900,7 @@ def _admin_rows(db: Session, apps: list[ParticipantApp]) -> list[AdminAppOut]:
                 participant_email=owner.email_id if owner else None,
                 company_name=owner.company_name if owner else None,
                 gateway_routes=list(app.gateway_routes or []),
+                gateway_scopes=list(app.gateway_scopes or []),
             )
         )
     return rows

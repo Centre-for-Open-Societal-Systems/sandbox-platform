@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, RefreshCw } from "lucide-react";
 
+import { PmPolicyList } from "@/components/apps/pm-policy-list";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
@@ -107,11 +108,13 @@ const PM_STATUS: Record<string, { label: string; variant: "success" | "neutral" 
   ACTIVE: { label: "Active", variant: "success" },
   DISABLED: { label: "Disabled", variant: "neutral" },
   FAILED: { label: "Not ready", variant: "danger" },
+  PENDING: { label: "Awaiting PM approval", variant: "neutral" },
 };
 
 /** Consent Manager partner portal: partner ID, portal role and the Partner Management partner. */
 function PartnerPortal({ portal }: { portal: PartnerPortalAccount }) {
   const pm = portal.pm_status ? (PM_STATUS[portal.pm_status] ?? PM_STATUS.FAILED) : null;
+  const prodPm = portal.pm_prod_status ? (PM_STATUS[portal.pm_prod_status] ?? PM_STATUS.FAILED) : null;
   return (
     <div className="mt-2 border-t border-hairline pt-2">
       <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -130,6 +133,23 @@ function PartnerPortal({ portal }: { portal: PartnerPortalAccount }) {
         </div>
       ) : null}
       {portal.pm_error ? <p className="mt-1 text-xs break-words text-red-700">{portal.pm_error}</p> : null}
+      {portal.pm_enabled && portal.pm_prod_enabled ? (
+        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-subtle">Production Partner Management</span>
+          {prodPm ? (
+            <Badge variant={prodPm.variant}>{prodPm.label}</Badge>
+          ) : (
+            <span className="text-subtle">not onboarded (no production access yet)</span>
+          )}
+          {portal.pm_prod_synced_at ? (
+            <span className="text-subtle">· {formatDateTime(portal.pm_prod_synced_at)}</span>
+          ) : null}
+        </div>
+      ) : null}
+      {portal.pm_prod_error ? (
+        <p className="mt-1 text-xs break-words text-red-700">{portal.pm_prod_error}</p>
+      ) : null}
+      {portal.pm_policies?.length ? <PmPolicyList policies={portal.pm_policies} showRequests /> : null}
     </div>
   );
 }

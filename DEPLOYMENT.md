@@ -90,6 +90,16 @@ the volume first (this deletes the data): `docker compose down -v`.
 | `GATEWAY_PROD_URL` | empty | External production gateway when it exists |
 | `GATEWAY_UAT_PUBLIC_URL`, `GATEWAY_PROD_PUBLIC_URL` | empty (= the URL above) | The gateway as **partners** reach it; shown in code samples, the try-it request URL and API history (see §7) |
 | `GATEWAY_SYNC_ENABLED`, `GATEWAY_TYPE` | `false`, `apisix` | **Pull from gateway** in the console; `apisix` or `kong` (see §7) |
+| `GATEWAY_SCOPES` | empty | oauth: scope per gateway prefix / operation (the partner gateway chart's `gateway-scopes.json`); empty = route ids only |
+| `GATEWAY_TOKEN_AUDIENCE` | `oan-partner-gateway` | `aud` of app tokens; the partner gateway checks it |
+| `GATEWAY_LEGACY_ROUTE_CLAIM` | `true` | Also put route ids (`oan_routes`) in app tokens, during the move to scopes |
+| `KEYCLOAK_APPS_REALM`, `KEYCLOAK_APPS_ADMIN_CLIENT_ID` / `_SECRET` | empty | oauth: the sandbox apps' own realm (e.g. `partner-sandbox-app`, `setup_app_realm.py`) and its service account (client roles only); empty = app clients stay in `KEYCLOAK_REALM` |
+| `PM_AUTO_APPROVE` | `true` | The sandbox approves its own Partner Management onboarding requests; `false` = PM's staff approve (maker-checker), status *Awaiting PM approval* until then |
+| `PM_PROD_*` (`STAFF_API_URL`, `TOKEN_URL`, `CLIENT_ID`, `CLIENT_SECRET`, `PARTNER_JWKS_BASE_URL`, `DEFAULT_POLICIES`, `AUTO_APPROVE`) | empty / `AUTO_APPROVE=false` | Production's own PM: a partner is onboarded there only with production access (JWKS `/partners/<id>/production/jwks.json`) and disabled there when it goes; approved by production PM's staff unless `PM_PROD_AUTO_APPROVE=true` |
+| `PM_API_VERSION`, `PM_PROD_API_VERSION` | `auto` | PM release (`1.0` = COSS today, `develop`), see docs/OPENG2P_INTEGRATION.md |
+| `POLICY_BACKEND` | `auto` | Where API products' data policies go: `pm`, `cm` (COSS Consent Manager), `none`; `auto` = PM if it has policies, else CM |
+| `CM_ADMIN_*`, `CM_PROD_ADMIN_*` (`API_URL`, `TOKEN_URL`, `CLIENT_ID`, `CLIENT_SECRET`) | empty | COSS Consent Manager staff API for policy bindings (role `CONSENT_MANAGER_ADMIN`) |
+| `KEYCLOAK_PROD_CLIENT_AUTH` | `client-secret` | `private-key-jwt`: production app clients authenticate with the partner's registered key |
 | `GATEWAY_AUTO_PULL_HOURS` | `24` | With pull on, pull every gateway on its own this often; `0` = button only (see §7) |
 | `GATEWAY_ADMIN_URL`, `GATEWAY_ADMIN_TOKEN` | empty | Gateway Admin API and its key, read by the pull (and written by app sync) |
 | `GATEWAY_APP_SYNC_ENABLED` | `false` | Write participant apps to APISIX as consumers (see §7, *Apps and keys*) |
@@ -283,14 +293,52 @@ curl -X POST https://<partner host>/farmer-registry/register-data/get_register_s
   chart's `callLog.url`.
 - The sandbox writes every active app key to Keycloak as a confidential client
   (`oan-sandbox-provisioner` needs `manage-clients`; `setup_partner_realm.py` gives it) whose
-  tokens carry `participant_uid`, `oan_app`, `oan_environments` and `oan_routes` (the APISIX
-  route ids of the app's approved API products). Revoking a key or deleting an app deletes
-  the client: no new token.
-- The gateway routes check the token (realm JWKS, `iss`, `exp`, the environment role) and
-  that the route is in `oan_routes`: `401` without or with a bad token, `403` for a route the
-  app has no product for. Locally: `PARTNER_AUTH=oauth` in `../apisix-gateway`. On
-  Kubernetes (APISIX Ingress Controller): chart
+  tokens carry `participant_uid`, `oan_app`, `oan_environments`, `oan_ips`, the limits, the
+  **scopes** of the app's approved API products in the standard `scope` claim and
+  `GATEWAY_TOKEN_AUDIENCE` in `aud` (and, while `GATEWAY_LEGACY_ROUTE_CLAIM` is on, the APISIX
+  route ids in `oan_routes`). Revoking a key or deleting an app deletes the client: no new
+  token.
+- **Apps realm.** App clients belong in a realm of their own (`KEYCLOAK_APPS_REALM`, e.g.
+  `partner-sandbox-app`), not in `KEYCLOAK_REALM`, which keeps the partners' **users** (portal
+  sign-in, CM partner portal). The gateway trusts only the apps realm's issuer, so a token of
+  the users' realm opens nothing there; the apps realm has machine settings (no login, no
+  users, 5-minute tokens, no profile/email/roles scopes) and its own service account with
+  client roles only. Move: (1) `KC_ADMIN_PASSWORD=... python scripts/keycloak/setup_app_realm.py
+  --url <keycloak> --env-file <.env>`; (2) deploy with `KEYCLOAK_APPS_*`; (3) **Re-sync all**
+  (each app's clients are written to the apps realm and its old copies in the users' realm are
+  removed); (4) partner gateway `keycloak.issuer: <public Keycloak>/realms/partner-sandbox-app`
+  (tokens issued before keep working only on the old issuer: they expire within five
+  minutes); (5) `setup_partner_realm.py --users-only` takes `manage-clients` away from the
+  users' realm provisioner.
+- **Scopes (Helm owns APISIX).** Which scope each route needs is set in the gateway's chart
+  (`deploy/apisix-partner-gateway/apis.yaml`); its generator writes `gateway-scopes.json`,
+  which is the sandbox's `GATEWAY_SCOPES` (`"/prefix"` or `"METHOD /path"` → `oan:...`). An
+  end-point's scope is looked up there; an app gets the scopes of its products' end-points.
+  The sandbox creates each `oan:` scope as a Keycloak client scope (shown in the token's
+  `scope`) and attaches it to the app's clients; scopes outside `oan:` are refused. With
+  scopes on and the legacy claim off, app sync reads **nothing** from APISIX: a new route
+  in an existing API needs only `helm upgrade`. A scope opens every route that requires it:
+  the console's API product dialog says when a product lists only part of a scope.
+- The gateway routes check the token (realm JWKS, `iss`, `exp`, `aud`, the environment role)
+  and that it holds the route's scope (or, with chart `legacyRouteIds`, the route id): `401`
+  without or with a bad token or another audience, `403` for a route the app has no product
+  for. On Kubernetes (APISIX Ingress Controller): chart
   [`deploy/apisix-partner-gateway/k8s`](deploy/apisix-partner-gateway/README.md).
+- **Moving to scopes:** (1) set `GATEWAY_SCOPES` (the chart's `gateway-scopes.json`) and
+  `GATEWAY_TOKEN_AUDIENCE`, keep `GATEWAY_LEGACY_ROUTE_CLAIM=true`, deploy; (2) Apps & Keys →
+  **Re-sync all** (or `scripts/keycloak/resync_apps.py`); (3) install chart 0.3.0 with
+  `legacyRouteIds: true`; (4) after five minutes every token has scope + audience: set
+  `legacyRouteIds: false` and `GATEWAY_LEGACY_ROUTE_CLAIM=false`, re-sync all. Order matters:
+  the chart refuses tokens without `aud` once installed.
+- **Partners cannot skip the gateway:** the chart can present a client certificate to the
+  upstreams (`upstreamTls.secretName`), and the upstreams' edge accepts the partner hosts and
+  paths only with it (DevOps; oan-helm `docs/apisix-gateway.md` 8d).
+- **Production clients without a shared secret** (`KEYCLOAK_PROD_CLIENT_AUTH=private-key-jwt`):
+  production app clients accept only a client assertion (RFC 7523) signed with the private key
+  of the partner's registered signing key (the production request's certificate / public key).
+  A production app of a partner without a usable key is not written (*Sync failed*, the reason
+  shown to administrators). The portal cannot fetch production tokens then: partners request
+  them from their servers (`client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer`).
 - Settings: `GATEWAY_PARTNER_AUTH=oauth`, `GATEWAY_APP_SYNC_ENABLED=true`,
   `KEYCLOAK_PROVISIONING_ENABLED=true`, `KEYCLOAK_URL`, `KEYCLOAK_REALM=partner`,
   `KEYCLOAK_ADMIN_CLIENT_SECRET`; usually also `PARTICIPANT_AUTH_PROVIDER=keycloak` with
@@ -299,6 +347,35 @@ curl -X POST https://<partner host>/farmer-registry/register-data/get_register_s
 - Try-it: **Get token** on the end-point page fetches the app's token (the secret stays on
   the server), shows the token request as its own curl, and puts the token in the
   `X-Partner-Token` header. Code samples show only the API call.
+
+### Partner Management: partners, approval and data policies (OpenG2P PM)
+
+Versions, the COSS Consent Manager backend and how to follow OpenG2P changes: [docs/OPENG2P_INTEGRATION.md](docs/OPENG2P_INTEGRATION.md).
+
+With `PM_PROVISIONING_ENABLED` (and `PM_PROD_*` for production's own PM) the sandbox keeps
+OpenG2P Partner Management in step, following PM's request model (every change is a request
+that is approved):
+
+| What | When | Approved by |
+|---|---|---|
+| **Onboarding** (partner id, JWKS URL, `PM_DEFAULT_POLICIES`) | UAT approval (UAT PM); production approval (production PM) | the sandbox where `PM_AUTO_APPROVE` / `PM_PROD_AUTO_APPROVE` (default: UAT yes, production **no**), else PM's staff |
+| **Policy request** (an API product's *PM policy*: a registry's `data_controller` + `allowed_data_scopes`, or a `use_case`) | an app's product carrying one is approved, or the product's policy changes | same rule; the sandbox never approves production policies by default |
+| **Policy revocation** | no approved product asks for the policy any more | same rule |
+| Disable / enable | access taken away / given back | immediate (PM partner state) |
+
+- An API product's policy is set in the console (API products → *Data access in Partner
+  Management*), with choices from PM's catalogue (`GET /oan/admin/api-products/pm-catalogue`).
+  The gateway decides which **APIs** an app calls; the PM policy decides which **data** the
+  partner may request: PM's staff own that decision.
+- Per participant and PM, products asking for the same policy are merged into one (lists
+  united); one request per change, so PM's staff approve it in one step. An empty
+  `allowed_signing_algs` becomes the algorithm of the partner's registered key.
+- Nothing is filed while the PM partner waits for approval (*Waiting*); a rejected policy is
+  filed again only when the products ask for something else; PM failures are retried. The
+  API reads PM's decisions every `APP_KEY_MAINTENANCE_MINUTES`.
+- Policies PM's staff create themselves are never changed by the sandbox.
+- Status: admin console (participant → Keycloak account → Partner Management) and the
+  partner's *My Apps → Data access*. Table `participant_pm_policy`.
 
 ### UAT and production apps; production's own Keycloak and APISIX
 

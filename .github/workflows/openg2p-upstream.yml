@@ -1,0 +1,27 @@
+name: OpenG2P upstream
+
+# Weekly: has OpenG2P Partner Management (develop, release branches) or the COSS
+# Consent Manager changed anything the sandbox relies on
+# (backend/app/integrations/openg2p_contract.py)? The job fails when there is
+# something to review; the report is the job summary. What to do then:
+# docs/OPENG2P_INTEGRATION.md. Reads public repositories only; changes nothing.
+
+on:
+  schedule:
+    - cron: "30 4 * * 1"  # Mondays 04:30 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check OpenG2P PM / COSS CM against the contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Standard library only: no pip install needed.
+      - run: python backend/scripts/openg2p/check_upstream.py --report "$GITHUB_STEP_SUMMARY"

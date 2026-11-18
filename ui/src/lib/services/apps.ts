@@ -16,6 +16,9 @@ import type {
   ListQuery,
   Pagination,
   ParticipantApp,
+  PmCatalogue,
+  PmPolicyRequest,
+  ResyncAllResult,
 } from "@/types/api";
 
 const PORTAL = { audience: "participant" as const };
@@ -32,6 +35,9 @@ export const appsApi = {
   availableProducts: () => api.get<AvailableApiProduct[]>("/participant/api-products", PORTAL),
 
   list: () => api.get<ParticipantApp[]>("/participant/apps", PORTAL),
+
+  /** Partner Management policies asked for on the participant's behalf. */
+  dataAccess: () => api.get<{ policies: PmPolicyRequest[] }>("/participant/data-access", PORTAL),
 
   get: (appId: string) => api.get<ParticipantApp>(`/participant/apps/${appId}`, PORTAL),
 
@@ -86,6 +92,9 @@ export const adminAppsApi = {
 
   endpointOptions: () => api.get<EndpointOptionGroup[]>("/admin/api-products/endpoint-options", ADMIN),
 
+  /** Partner Management's policy choices (registries' scopes, use cases ...). */
+  pmCatalogue: () => api.get<PmCatalogue>("/admin/api-products/pm-catalogue", ADMIN),
+
   createProduct: (payload: ApiProductPayload) =>
     api.post<ApiProductDetail>("/admin/api-products", payload, ADMIN),
 
@@ -116,6 +125,9 @@ export const adminAppsApi = {
   restoreApp: (id: number) => api.post<AdminApp>(`/admin/apps/${id}/restore`, undefined, ADMIN),
 
   resync: (id: number) => api.post<AdminApp>(`/admin/apps/${id}/gateway-sync`, undefined, ADMIN),
+
+  /** Re-write every active app (after a change of scopes, audience or client auth). */
+  resyncAll: () => api.post<ResyncAllResult>("/admin/apps/gateway-sync-all", undefined, ADMIN),
 
   /** A participant's Keycloak user and roles. */
   iamAccount: (participantId: number) =>

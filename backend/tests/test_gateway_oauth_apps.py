@@ -49,8 +49,9 @@ class FakeKeycloakClients:
         return jwt.PyJWK.from_dict({**jwt.algorithms.RSAAlgorithm.to_jwk(REALM_KEY.public_key(), as_dict=True),
                                     "kid": REALM_KID, "alg": "RS256"})
 
-    def upsert(self, client_id, secret, app_uid, description, claims):
-        self.clients[client_id] = {"secret": secret, "app_uid": app_uid, "claims": claims}
+    def upsert(self, client_id, secret, app_uid, description, claims, scopes=None, audience="", jwks=None):
+        self.clients[client_id] = {"secret": secret, "app_uid": app_uid, "claims": claims,
+                                   "scopes": list(scopes or []), "audience": audience, "jwks": jwks}
 
     def token(self, client_id, secret):
         assert self.clients[client_id]["secret"] == secret
@@ -58,6 +59,10 @@ class FakeKeycloakClients:
         now = int(time.time())
         claims = {"iss": "http://kc/realms/partner", "azp": client_id, "iat": now, "exp": now + 300,
                   "sub": "service-account", **self.clients[client_id]["claims"]}
+        if self.clients[client_id]["scopes"]:
+            claims["scope"] = " ".join(self.clients[client_id]["scopes"])
+        if self.clients[client_id]["audience"]:
+            claims["aud"] = self.clients[client_id]["audience"]
         return {"access_token": jwt.encode(claims, REALM_KEY, algorithm="RS256", headers={"kid": REALM_KID}),
                 "token_type": "Bearer", "expires_in": 300}
 

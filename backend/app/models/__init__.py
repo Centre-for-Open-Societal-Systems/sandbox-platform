@@ -20,6 +20,7 @@ from app.models.app import (
     ParticipantAppCredential,
     ParticipantAppProduct,
     ParticipantIamUser,
+    ParticipantPmPolicy,
 )
 from app.models.catalog import Endpoint, EndpointSchema, MapperData, Product
 from app.models.content import (
@@ -81,6 +82,7 @@ __all__ = [
     "ParticipantApp",
     "ParticipantAppProduct",
     "GatewayRouteSnapshot",
+    "ParticipantPmPolicy",
     "ParticipantIamUser",
     "ParticipantAppCredential",
     # content

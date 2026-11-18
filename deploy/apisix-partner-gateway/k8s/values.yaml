@@ -1,9 +1,13 @@
 # oan-partner-gateway: the partner APIs behind APISIX, for apps created in the OAN sandbox.
+# Routes and plugins come from ../apis.yaml (generate_k8s_chart.py); every APISIX change is
+# made here, through Helm. The sandbox never writes to the gateway.
+#
 # Every call carries the app's access token in X-Partner-Token: a Keycloak
 # client-credentials token (client_id = API key, client_secret = API secret) from the realm
 # the sandbox uses (KEYCLOAK_REALM). The gateway checks its signature (realm JWKS), iss,
-# exp, the environment role and that the route is in the token's oan_routes (the app's
-# approved API products). `Authorization` stays the API's own credential and is passed on.
+# exp, aud (keycloak.audience), the environment role, and that the token's `scope` holds the
+# scope of the API called (the app's approved API products). `Authorization` stays the API's
+# own credential and is passed on.
 #
 # One release per gateway. UAT and production are two gateways, so two releases, each with
 # its own values file: its hosts, its Keycloak realm (keycloak.issuer) and environmentRole.
@@ -21,30 +25,58 @@ tls:
 
 # The sandbox's Keycloak realm, exactly as Keycloak writes it into tokens (`iss`).
 keycloak:
+  # The sandbox apps' realm (sandbox KEYCLOAK_APPS_REALM, e.g. partner-sandbox-app), never the
+  # partners' users realm: e.g. https://keycloak.example.org/realms/partner-sandbox-app
   issuer: ""
   # Where APISIX reads the realm's discovery document. Empty = <issuer>/.well-known/openid-configuration.
   discovery: ""
+  # The token's `aud` must contain this (the sandbox's GATEWAY_TOKEN_AUDIENCE puts it into
+  # every app token), so a token issued for another service of the realm is refused (401).
+  # Empty = aud is not checked.
+  # Off by default; set it (oan-partner-gateway) once every app token carries it.
+  audience: ""
 
 # Role in the token's oan_environments this gateway requires: uat, or production on a
 # production gateway.
 environmentRole: uat
 
+# Migration from route ids to scopes. true: a route is also granted when its id is in the
+# token's oan_routes (tokens of a sandbox that does not write scopes yet). Order:
+#   1. upgrade the sandbox (it writes `scope` + `aud` on every app client) and re-sync apps;
+#   2. install this chart with legacyRouteIds: true;
+#   3. after every app is re-synced (tokens live five minutes), set legacyRouteIds: false.
+legacyRouteIds: true
+
 # The plugins every route of an API shares (the app token check, the call log) are one
 # ApisixPluginConfig per API, and the routes point at it. true writes a copy on each route
-# instead: for an Ingress Controller that does not resolve plugin_config_name.
+# instead: for an Ingress Controller that does not resolve plugin_config_name. An operation
+# with its own scope (apis.yaml) always carries its plugins inline.
 inlineSharedPlugins: false
 
-# ---- APIs. Only what partners call: staff have their own portals, so no staff API is
-# routed here. Each API is switched on by `enabled`; its upstream is a public host (https, 443).
+# Client certificate APISIX presents to every upstream (mTLS): a Secret (tls.crt, tls.key)
+# in `namespace` (empty = the release namespace). The upstream's edge (ingress / reverse
+# proxy) accepts the partner paths only with a certificate of this CA, so partners cannot
+# call the API directly and skip the gateway. An API can set its own under
+# <api>.upstreamTls. Empty = no client certificate (as before).
+upstreamTls:
+  secretName: ""
+  namespace: ""
+
+# ---- APIs (see ../apis.yaml for their routes and scopes). Only what partners call: staff
+# have their own portals, so no staff API is routed here. Each API is switched on by
+# `enabled`; its upstream is a public host (https, 443). Optional per API: `basePath` (path
+# the host serves the API under; empty = the root) and `upstreamTls` (as above).
 
 # Consent Manager (OpenG2P).
 consentManager:
   # Partner portal API (consent requests, OTP, consents, receipts) under /consent-manager:
   # the console host, of which only /consent/v1/partner-portal is routed.
+  # Scope oan:consent-manager-portal.
   portalApi:
     enabled: false
     host: ""
   # Partner API (validate, consent status, receipts, JWKS) under /consent-manager-partner.
+  # Scope oan:consent-manager-partner.
   partnerApi:
     enabled: false
     host: ""
@@ -52,13 +84,13 @@ consentManager:
     basePath: ""
 
 # Partner Management (OpenG2P): key fetch API (a partner's public keys) under
-# /partner-management-keys.
+# /partner-management-keys. Scope oan:partner-management-keys.
 partnerManagement:
   keysApi:
     enabled: false
     host: ""
 
-# Aggregation Layer (DCI search) under /aggregation-layer.
+# Aggregation Layer (DCI search) under /aggregation-layer. Scope oan:aggregation-layer.
 aggregationLayer:
   enabled: false
   host: ""

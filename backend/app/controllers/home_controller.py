@@ -156,3 +156,9 @@ def health(db: DbSession):
 def partner_jwks(partner_id: str, db: DbSession):
     """A partner's public keys (JWKS), read by OpenG2P Partner Management."""
     return partner_portal_service.jwks(db, partner_id)
+
+
+@router.get("/partners/{partner_id}/production/jwks.json", include_in_schema=False)
+def partner_production_jwks(partner_id: str, db: DbSession):
+    """The same for production's own PM (PM_PROD_*): only while the partner has production access."""
+    return partner_portal_service.jwks(db, partner_id, production=True)

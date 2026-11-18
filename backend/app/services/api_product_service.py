@@ -26,7 +26,7 @@ from app.schemas.app import (
     ApiProductOut,
     ApiProductUpdate,
 )
-from app.services import app_gateway_service, audit_service
+from app.services import app_gateway_service, audit_service, gateway_scope_service
 from app.services.audit_service import Action
 
 
@@ -46,7 +46,9 @@ def get_product(db: Session, api_product_id: int) -> ApiProductDetailOut:
     product = _require(db, api_product_id)
     summary = _summaries(db, [product])[0]
     return ApiProductDetailOut(
-        **summary.model_dump(), endpoints=endpoint_rows(db, ApiProductRepository(db).endpoints(product.api_product_id))
+        **summary.model_dump(),
+        endpoints=endpoint_rows(db, ApiProductRepository(db).endpoints(product.api_product_id)),
+        gateway_scopes=gateway_scope_service.product_scopes(db, product.api_product_id),
     )
 
 
@@ -56,7 +58,8 @@ def create_product(db: Session, admin: AdminPrincipal, payload: ApiProductCreate
         raise ConflictError(f"An API product named '{payload.name}' already exists.")
     endpoint_ids = _valid_endpoint_ids(db, payload.endpoint_ids)
     product = ApiProduct(
-        **payload.model_dump(exclude={"endpoint_ids", "approval_type"}),
+        **payload.model_dump(exclude={"endpoint_ids", "approval_type", "pm_policy"}),
+        pm_policy=payload.pm_policy.as_dict() if payload.pm_policy else None,
         approval_type=str(payload.approval_type),
         added_by=admin.id,
         modify_by=admin.id,
@@ -82,8 +85,10 @@ def update_product(
     endpoint_ids = _valid_endpoint_ids(db, payload.endpoint_ids)
     before = {link.endpoint_id for link in product.endpoints}
     limits_before = (product.rate_limit_per_minute, product.quota_per_day)
-    for key, value in payload.model_dump(exclude={"endpoint_ids", "approval_type"}).items():
+    policy_before = product.pm_policy
+    for key, value in payload.model_dump(exclude={"endpoint_ids", "approval_type", "pm_policy"}).items():
         setattr(product, key, value)
+    product.pm_policy = payload.pm_policy.as_dict() if payload.pm_policy else None
     product.approval_type = str(payload.approval_type)
     product.modify_by = admin.id
     repo.replace_endpoints(product, endpoint_ids)
@@ -93,7 +98,12 @@ def update_product(
         description=f"Updated API product {product.name} ({len(endpoint_ids)} endpoint(s))",
     )
     # Apps hold the product's routes and limits on their gateway consumer.
-    if before != set(endpoint_ids) or limits_before != (payload.rate_limit_per_minute, payload.quota_per_day):
+    # (and, for its PM policy, file the change in Partner Management).
+    if (
+        before != set(endpoint_ids)
+        or limits_before != (payload.rate_limit_per_minute, payload.quota_per_day)
+        or policy_before != product.pm_policy
+    ):
         _resync_subscribers(db, api_product_id)
     return get_product(db, api_product_id)
 

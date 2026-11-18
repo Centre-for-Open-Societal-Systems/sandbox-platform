@@ -1,0 +1,6 @@
+{
+  "/consent-manager": "oan:consent-manager-portal",
+  "/consent-manager-partner": "oan:consent-manager-partner",
+  "/partner-management-keys": "oan:partner-management-keys",
+  "/aggregation-layer": "oan:aggregation-layer"
+}

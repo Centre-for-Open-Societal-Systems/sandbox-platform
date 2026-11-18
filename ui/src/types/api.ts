@@ -725,14 +725,27 @@ export interface ApiProduct {
   /** Gateway limits for apps with this product; null = no limit. */
   rate_limit_per_minute: number | null;
   quota_per_day: number | null;
+  /** The Partner Management policy apps with this product ask for; null = none. */
+  pm_policy?: PmPolicy | null;
   endpoint_count: number;
   app_count: number;
   added_date: string | null;
   modify_date: string | null;
 }
 
+/** An OAuth scope an API product grants (GATEWAY_SCOPES). */
+export interface ApiProductScope {
+  scope: string;
+  /** Gateway end-points of this scope in the product, out of all of them. */
+  in_product: number;
+  total: number;
+  /** False: the scope also opens end-points the product does not list. */
+  whole_api: boolean;
+}
+
 export interface ApiProductDetail extends ApiProduct {
   endpoints: ApiProductEndpoint[];
+  gateway_scopes?: ApiProductScope[];
 }
 
 export interface ApiProductPayload {
@@ -745,6 +758,54 @@ export interface ApiProductPayload {
   endpoint_ids: number[];
   rate_limit_per_minute: number | null;
   quota_per_day: number | null;
+  pm_policy?: PmPolicy | null;
+}
+
+/** OpenG2P Partner Management access policy (PM PolicyInput): a registry's scopes or a use case. */
+export interface PmPolicy {
+  data_controller?: string | null;
+  use_case?: string | null;
+  allowed_data_scopes?: string[];
+  allowed_purposes?: string[];
+  allowed_subject_id_types?: string[];
+  allowed_signing_algs?: string[];
+  max_validity_duration?: string | null;
+  fetch_type?: "oneshot" | "periodic";
+  max_fetch_frequency?: string | null;
+  data_life?: string | null;
+  allow_partner_consents?: boolean;
+}
+
+export interface PmCatalogueItem {
+  id: string;
+  label?: string | null;
+  description?: string | null;
+  purpose?: string | null;
+  fields?: string[];
+}
+
+export interface PmCatalogue {
+  enabled: boolean;
+  /** Where policies are filed: "pm" (Partner Management) or "cm" (COSS Consent Manager). */
+  backend?: "pm" | "cm" | null;
+  error?: string;
+  sources: { kind: string; data_controller?: string | null; label: string; items: PmCatalogueItem[] }[];
+}
+
+/** A Partner Management policy the sandbox asked for on a participant's behalf. */
+export interface PmPolicyRequest {
+  /** The PM: UAT's, or production's own. */
+  environment: "UAT" | "PRODUCTION";
+  /** "pm": a Partner Management policy request; "cm": a COSS Consent Manager binding. */
+  backend?: "pm" | "cm";
+  /** data_controller:<id> or use_case:<name@major> */
+  policy_key: string;
+  status: "WAITING" | "PENDING" | "ACTIVE" | "REJECTED" | "REVOKING" | "FAILED";
+  products: string[];
+  policy?: PmPolicy | null;
+  request_id?: string | null;
+  error?: string | null;
+  synced_at?: string | null;
 }
 
 /** Picker data: catalogue endpoints grouped by catalogue product. */
@@ -877,6 +938,14 @@ export interface AdminApp extends ParticipantApp {
   participant_email: string | null;
   company_name: string | null;
   gateway_routes: string[];
+  /** OAuth scopes in the app's tokens (GATEWAY_SCOPES). */
+  gateway_scopes?: string[];
+}
+
+export interface ResyncAllResult {
+  apps: number;
+  synced: number;
+  failed: number;
 }
 
 /** A new app waits for an administrator, so it has no credential yet. */
@@ -933,9 +1002,16 @@ export interface PartnerPortalAccount {
   pm_enabled: boolean;
   /** The partner in Partner Management, e.g. PARTNER_OAN_P_42. */
   pm_partner_id: string | null;
-  pm_status: "ACTIVE" | "DISABLED" | "FAILED" | null;
+  pm_status: "ACTIVE" | "DISABLED" | "FAILED" | "PENDING" | null;
   pm_error?: string | null;
   pm_synced_at?: string | null;
+  /** Production runs its own Partner Management (PM_PROD_*). */
+  pm_prod_enabled?: boolean;
+  /** The same partner there; null: not sent (no production access yet). PENDING: waits for PM staff. */
+  pm_prod_status?: "ACTIVE" | "DISABLED" | "FAILED" | "PENDING" | null;
+  pm_prod_error?: string | null;
+  pm_prod_synced_at?: string | null;
+  pm_policies?: PmPolicyRequest[];
 }
 
 export interface IamAccountState {

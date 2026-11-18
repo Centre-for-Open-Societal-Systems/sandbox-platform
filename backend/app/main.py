@@ -48,8 +48,19 @@ def _run_key_maintenance() -> None:
         result = app_service.run_key_maintenance(db)
         if result["expired"] or result["warned"]:
             logger.info("Key maintenance: %(expired)d expired, %(warned)d warned.", result)
-        from app.services import log_service, support_service
+        from app.services import (
+            log_service,
+            partner_portal_service,
+            pm_policy_service,
+            support_service,
+        )
 
+        approved = partner_portal_service.refresh_pending(db)
+        if approved:
+            logger.info("Partner Management: %d onboarding request(s) decided by PM staff.", approved)
+        policies = pm_policy_service.refresh_pending(db)
+        if policies:
+            logger.info("Partner Management: policies of %d participant(s) updated.", policies)
         closed = support_service.close_stale_tickets(db)
         if closed:
             logger.info("Support: %d answered tickets closed after no reply.", closed)

@@ -65,8 +65,9 @@ class FakeRealms:
     def realm() -> str:
         return keycloak.current_realm().environment
 
-    def upsert(self, client_id, secret, app_uid, description, claims):
-        self.clients[self.realm()][client_id] = {"secret": secret, "claims": claims}
+    def upsert(self, client_id, secret, app_uid, description, claims, scopes=None, audience="", jwks=None):
+        self.clients[self.realm()][client_id] = {"secret": secret, "claims": claims,
+                                                 "scopes": list(scopes or []), "jwks": jwks}
 
     def delete(self, client_id):
         self.clients[self.realm()].pop(client_id, None)

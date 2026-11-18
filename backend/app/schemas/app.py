@@ -5,10 +5,12 @@ from __future__ import annotations
 import ipaddress
 import re
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.config.settings import settings
+from app.integrations import openg2p_contract
 from app.models.enums import ApprovalType, Environment
 from app.schemas.common import ListQuery, ORMModel
 
@@ -37,6 +39,94 @@ def _clean_ips(value: list[str] | None) -> list[str] | None:
 
 
 # ------------------------------------------------------------ API products
+_PM_IDENTIFIER = re.compile(openg2p_contract.PM_IDENTIFIER_PATTERN)
+_PM_USE_CASE = re.compile(openg2p_contract.PM_USE_CASE_PATTERN)
+_PM_DURATION = re.compile(r"^P(?=\d|T\d)(\d+Y)?(\d+M)?(\d+W)?(\d+D)?(T(\d+H)?(\d+M)?(\d+S)?)?$")
+PM_SIGNING_ALGS = openg2p_contract.PM_SIGNING_ALGS
+
+
+def _clean_codes(values: list[str]) -> list[str]:
+    out: list[str] = []
+    for value in values:
+        value = value.strip()
+        if value and value not in out:
+            out.append(value)
+    return out
+
+
+class PmPolicy(BaseModel):
+    """The OpenG2P Partner Management access policy an API product asks for (PM's
+    PolicyInput): what data a partner holding the product may request.
+
+    Exactly one of ``data_controller`` (a registry, with ``allowed_data_scopes``) or
+    ``use_case`` (``name@major``; no scopes, no purposes: granting a use case grants
+    its purpose). Approving the product for an app files a *policy request* in the
+    app's environment's PM; PM's staff decide (except where PM_AUTO_APPROVE).
+    ``allowed_signing_algs`` empty = the algorithm of the partner's registered key.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    data_controller: str | None = Field(None, max_length=255)
+    use_case: str | None = Field(None, max_length=255)
+    allowed_data_scopes: list[str] = Field(default_factory=list)
+    allowed_purposes: list[str] = Field(default_factory=list)
+    allowed_subject_id_types: list[str] = Field(default_factory=list)
+    allowed_signing_algs: list[str] = Field(default_factory=list)
+    max_validity_duration: str | None = None
+    fetch_type: Literal["oneshot", "periodic"] = "oneshot"
+    max_fetch_frequency: str | None = None
+    data_life: str | None = None
+    allow_partner_consents: bool = False
+
+    @field_validator("data_controller", "use_case", "max_validity_duration", "max_fetch_frequency",
+                     "data_life", mode="before")
+    @classmethod
+    def _blank(cls, v):
+        return (v.strip() or None) if isinstance(v, str) else v
+
+    @field_validator("allowed_data_scopes", "allowed_purposes", "allowed_subject_id_types", "allowed_signing_algs")
+    @classmethod
+    def _codes(cls, v: list[str]) -> list[str]:
+        return _clean_codes(v)
+
+    @field_validator("max_validity_duration", "max_fetch_frequency", "data_life")
+    @classmethod
+    def _duration(cls, v: str | None) -> str | None:
+        if v is not None and not _PM_DURATION.match(v.upper()):
+            raise ValueError(f"{v!r} is not an ISO-8601 duration such as P30D, P1Y or PT12H.")
+        return v.upper() if v else v
+
+    @model_validator(mode="after")
+    def _one_key(self):
+        if bool(self.data_controller) == bool(self.use_case):
+            raise ValueError("Set one of data_controller (a registry) or use_case (name@major).")
+        if self.data_controller:
+            if not _PM_IDENTIFIER.match(self.data_controller):
+                raise ValueError("data_controller: no spaces or '/', '?', '#', '%'.")
+            if not self.allowed_data_scopes:
+                raise ValueError(f"allowed_data_scopes: required for data controller '{self.data_controller}'.")
+        if self.use_case:
+            if not _PM_USE_CASE.match(self.use_case):
+                raise ValueError(f"use_case: {self.use_case!r} must be 'name@major' (e.g. loan-profile@1).")
+            if self.allowed_data_scopes or self.allowed_purposes:
+                raise ValueError("A use-case policy takes no allowed_data_scopes or allowed_purposes.")
+        bad = [a for a in self.allowed_signing_algs if a not in PM_SIGNING_ALGS]
+        if bad:
+            raise ValueError(f"allowed_signing_algs: unsupported {bad}; use {list(PM_SIGNING_ALGS)}.")
+        return self
+
+    @property
+    def key(self) -> str:
+        return f"data_controller:{self.data_controller}" if self.data_controller else f"use_case:{self.use_case}"
+
+    def as_dict(self) -> dict:
+        """As stored on the product and sent to PM: unset optional fields left out."""
+        data = self.model_dump()
+        return {k: v for k, v in data.items() if v not in (None, [], "") and not (k == "fetch_type" and v == "oneshot")
+                and not (k == "allow_partner_consents" and v is False)}
+
+
 class ApiProductCreate(BaseModel):
     #: Machine name: lower-case letters, digits and hyphens.
     name: str = Field(..., min_length=3, max_length=100)
@@ -50,6 +140,9 @@ class ApiProductCreate(BaseModel):
     #: Gateway limits for apps with this product; empty = no limit.
     rate_limit_per_minute: int | None = Field(None, ge=1, le=1_000_000)
     quota_per_day: int | None = Field(None, ge=1, le=100_000_000)
+    #: Data access in OpenG2P Partner Management that apps with this product ask for;
+    #: None = none (the product only opens APIs at the gateway).
+    pm_policy: PmPolicy | None = None
 
     @field_validator("name")
     @classmethod
@@ -95,14 +188,27 @@ class ApiProductOut(ORMModel):
     sort_order: int = 0
     rate_limit_per_minute: int | None = None
     quota_per_day: int | None = None
+    pm_policy: dict | None = None
     endpoint_count: int = 0
     app_count: int = 0
     added_date: datetime | None = None
     modify_date: datetime | None = None
 
 
+class ApiProductScopeOut(BaseModel):
+    """An OAuth scope the product grants (GATEWAY_SCOPES): ``in_product`` of the
+    scope's ``total`` gateway end-points are in the product; ``whole_api`` False means
+    the scope also opens end-points the product does not list."""
+
+    scope: str
+    in_product: int
+    total: int
+    whole_api: bool
+
+
 class ApiProductDetailOut(ApiProductOut):
     endpoints: list[ApiProductEndpointOut] = Field(default_factory=list)
+    gateway_scopes: list[ApiProductScopeOut] = Field(default_factory=list)
 
 
 # -------------------------------------------------------------------- apps
@@ -243,6 +349,8 @@ class AdminAppOut(AppOut):
     participant_email: str | None = None
     company_name: str | None = None
     gateway_routes: list[str] = Field(default_factory=list)
+    #: OAuth scopes in the app's tokens (GATEWAY_SCOPES).
+    gateway_scopes: list[str] = Field(default_factory=list)
 
 
 class AppCreatedOut(BaseModel):

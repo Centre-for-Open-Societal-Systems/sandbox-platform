@@ -119,6 +119,17 @@ class GatewaySyncStatus(StrEnum):
     DISABLED = "DISABLED"
 
 
+class PmPolicyStatus(StrEnum):
+    """A Partner Management policy the sandbox asked for (``ParticipantPmPolicy``)."""
+
+    WAITING = "WAITING"
+    PENDING = "PENDING"
+    ACTIVE = "ACTIVE"
+    REJECTED = "REJECTED"
+    REVOKING = "REVOKING"
+    FAILED = "FAILED"
+
+
 class IamUserStatus(StrEnum):
     """A participant's Keycloak user, as the sandbox last left it."""
 
@@ -128,6 +139,10 @@ class IamUserStatus(StrEnum):
     DISABLED = "DISABLED"
     #: Keycloak could not be updated; the admin console can retry.
     FAILED = "FAILED"
+    #: (PM partners only) onboarded, waiting for PM's own staff to approve it.
+    PENDING = "PENDING"
+    #: (PM 1.0 only) not onboarded yet: that PM needs the partner's signing key first.
+    NO_KEY = "NO_KEY"
 
 
 class ApiCallSource(StrEnum):
