@@ -39,12 +39,19 @@ GATEWAY_PROD_ADMIN_URL are set, else the main ones - and its tokens name only
 that environment (``oan_environments``). A production app's keys work only while
 its owner is approved for production.
 
+Route ids are resolved from the routes the last "Pull from gateway" kept
+(``GatewayRouteSnapshot``, ``routes_for``); only a gateway never pulled is read
+live. So with GATEWAY_PARTNER_AUTH=oauth, once pulled, approving an app or
+changing a product needs Keycloak but not the gateway. A pull re-syncs the apps
+whose route ids changed (``resync_after_pull``).
+
 ``sync_app`` is idempotent and never raises: a gateway failure is stored on
 the app (``gateway_status`` FAILED, ``gateway_error``) and can be retried.
 """
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Iterable
 from datetime import UTC, datetime
 
@@ -56,7 +63,11 @@ from app.core import crypto
 from app.core.exceptions import AppError
 from app.core.logging import get_logger
 from app.integrations import gateway, keycloak
-from app.models.app import ParticipantApp, ParticipantAppCredential
+from app.models.app import (
+    GatewayRouteSnapshot,
+    ParticipantApp,
+    ParticipantAppCredential,
+)
 from app.models.catalog import Endpoint, Product
 from app.models.enums import (
     AppStatus,
@@ -142,11 +153,11 @@ def sync_app(
                 # The routes check the token, not a consumer: only read the routes (their ids
                 # go into the token's oan_routes), never write to the gateway.
                 app.gateway_routes, app.gateway_warnings = resolve_routes(
-                    db, app, gateway.list_routes() if routes is None else routes
+                    db, app, routes_for(db, app.environment) if routes is None else routes
                 )
                 _sync_oauth_clients(app, owner)
             else:
-                _write_consumer(db, app, gateway.list_routes() if routes is None else routes)
+                _write_consumer(db, app, routes_for(db, app.environment) if routes is None else routes)
         if is_production(app):
             _forget_on_main(app)
         app.gateway_status = str(GatewaySyncStatus.SYNCED)
@@ -264,8 +275,7 @@ def sync_apps(db: Session, apps: Iterable[ParticipantApp]) -> None:
         target = gateway.target_for(app.environment)
         if target not in routes:
             try:
-                with gateway.use_target(target):
-                    routes[target] = gateway.list_routes()
+                routes[target] = routes_for(db, app.environment)
             except AppError as exc:
                 routes[target] = exc
         found = routes[target]
@@ -274,6 +284,82 @@ def sync_apps(db: Session, apps: Iterable[ParticipantApp]) -> None:
             db.commit()
             continue
         sync_app(db, app, found)
+
+
+# ------------------------------------------------------- routes of the last pull
+_ROUTE_FIELDS = {f.name for f in dataclasses.fields(gateway.GatewayRoute)}
+
+
+def save_routes(
+    db: Session, environment: str, gateway_type: str, routes: list[gateway.GatewayRoute], pulled_by: str
+) -> None:
+    """Keep the routes a pull read from the gateway ``environment`` ("UAT" / "PRODUCTION")."""
+    row = db.get(GatewayRouteSnapshot, environment) or GatewayRouteSnapshot(environment=environment)
+    row.gateway_type = gateway_type
+    row.routes = [dataclasses.asdict(route) for route in routes]
+    row.pulled_date = datetime.now(UTC)
+    row.pulled_by = pulled_by[:200]
+    db.add(row)
+    db.commit()
+
+
+def stored_routes(db: Session, environment: str) -> list[gateway.GatewayRoute] | None:
+    """The routes of the last pull of that gateway; None when it was never pulled."""
+    row = db.get(GatewayRouteSnapshot, environment)
+    if row is None:
+        return None
+    return [
+        gateway.GatewayRoute(**{k: v for k, v in item.items() if k in _ROUTE_FIELDS})
+        for item in row.routes or []
+    ]
+
+
+def last_pull(db: Session, environment: str) -> datetime | None:
+    row = db.get(GatewayRouteSnapshot, environment)
+    if row is None or row.pulled_date is None:
+        return None
+    pulled = row.pulled_date
+    return pulled.replace(tzinfo=UTC) if pulled.tzinfo is None else pulled
+
+
+def routes_for(db: Session, environment: str) -> list[gateway.GatewayRoute]:
+    """The routes of the gateway serving an app of ``environment``: the last pull's copy,
+    else (never pulled) read from its Admin API."""
+    target = gateway.target_for(environment)
+    stored = stored_routes(db, target.environment)
+    if stored is not None:
+        return stored
+    with gateway.use_target(target):
+        return gateway.list_routes()
+
+
+def resync_after_pull(db: Session, environment: str) -> int:
+    """Re-sync the active apps on gateway ``environment`` whose route ids (or warnings)
+    differ from what the pulled routes give, e.g. a renamed route with a new id.
+    Returns how many were re-synced."""
+    if not gateway.app_sync_configured():
+        return 0
+    routes = stored_routes(db, environment)
+    if routes is None:
+        return 0
+    apps = db.execute(
+        select(ParticipantApp).where(
+            ParticipantApp.is_deleted.is_(False),
+            ParticipantApp.status == int(AppStatus.ACTIVE),
+        )
+    ).scalars().all()
+    changed = 0
+    for app in apps:
+        if gateway.target_for(app.environment).environment != environment:
+            continue
+        if not owner_active(db.get(Participant, app.participant_id), app.environment):
+            continue
+        route_ids, warnings = resolve_routes(db, app, routes)
+        if route_ids == sorted(app.gateway_routes or []) and warnings == list(app.gateway_warnings or []):
+            continue
+        sync_app(db, app, routes)
+        changed += 1
+    return changed
 
 
 def _write_consumer(db: Session, app: ParticipantApp, routes: list[gateway.GatewayRoute]) -> None:

@@ -500,6 +500,12 @@ export default function ProductsPage() {
                 <SyncCount label="Unchanged" value={syncReport.unchanged} />
                 <SyncCount label="Not on gateway" value={syncReport.missing_count} tone="text-[#B26A00]" />
               </div>
+              {!syncReport.dry_run && (syncReport.apps_resynced ?? 0) > 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  {syncReport.apps_resynced} app{syncReport.apps_resynced === 1 ? "" : "s"} re-synced: their
+                  routes changed on the gateway.
+                </p>
+              ) : null}
 
               <div className="mt-2 max-h-[50vh] space-y-5 overflow-y-auto pr-1">
                 {syncReport.dry_run && pendingChanges(syncReport) === 0 ? (

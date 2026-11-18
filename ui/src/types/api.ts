@@ -472,6 +472,8 @@ export interface GatewaySyncReport {
   updated_count: number;
   skipped_count: number;
   missing_count: number;
+  /** Active apps re-synced because the pulled routes changed their route ids. */
+  apps_resynced?: number;
 }
 
 export interface TryItResult {

@@ -15,6 +15,7 @@ from app.models.admin import (
 from app.models.app import (
     ApiProduct,
     ApiProductEndpoint,
+    GatewayRouteSnapshot,
     ParticipantApp,
     ParticipantAppCredential,
     ParticipantAppProduct,
@@ -79,6 +80,7 @@ __all__ = [
     "ApiProductEndpoint",
     "ParticipantApp",
     "ParticipantAppProduct",
+    "GatewayRouteSnapshot",
     "ParticipantIamUser",
     "ParticipantAppCredential",
     # content

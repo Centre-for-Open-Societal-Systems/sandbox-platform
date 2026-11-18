@@ -90,6 +90,7 @@ the volume first (this deletes the data): `docker compose down -v`.
 | `GATEWAY_PROD_URL` | empty | External production gateway when it exists |
 | `GATEWAY_UAT_PUBLIC_URL`, `GATEWAY_PROD_PUBLIC_URL` | empty (= the URL above) | The gateway as **partners** reach it; shown in code samples, the try-it request URL and API history (see §7) |
 | `GATEWAY_SYNC_ENABLED`, `GATEWAY_TYPE` | `false`, `apisix` | **Pull from gateway** in the console; `apisix` or `kong` (see §7) |
+| `GATEWAY_AUTO_PULL_HOURS` | `24` | With pull on, pull every gateway on its own this often; `0` = button only (see §7) |
 | `GATEWAY_ADMIN_URL`, `GATEWAY_ADMIN_TOKEN` | empty | Gateway Admin API and its key, read by the pull (and written by app sync) |
 | `GATEWAY_APP_SYNC_ENABLED` | `false` | Write participant apps to APISIX as consumers (see §7, *Apps and keys*) |
 | `APP_CREDENTIAL_ENCRYPTION_KEY` | — (**Secret**, required in production) | Fernet key for stored app keys/secrets; never rotate it without re-issuing keys |
@@ -226,7 +227,16 @@ preview, then on **Apply pull**:
 - fills in what existing end-points lack (name, description, path parameters, credential
   header) without overwriting an imported OpenAPI contract;
 - lists end-points the gateway no longer serves, and wildcard / OPTIONS-only routes, without
-  deleting anything.
+  deleting anything;
+- keeps a copy of the routes (table `gateway_route_snapshot`, one row per gateway) and
+  re-syncs the active apps whose route ids changed (e.g. a route renamed in the Helm chart).
+
+App sync resolves route ids from that copy, so once a gateway has been pulled, approving an
+app or changing an API product does not call the Admin API (a gateway never pulled is still
+read live). The API also pulls on its own every `GATEWAY_AUTO_PULL_HOURS` (default 24; one
+replica at a time, and not when the last pull, by hand or automatic, is newer); the audit
+log names it "automatic". New routes still arrive **unpublished**: an administrator
+publishes the end-point and adds it to an API product before apps can call it.
 
 Request and response samples are not on the gateway: import the app's OpenAPI spec on the
 product for those. The API is `GET /oan/admin/gateway/status` and

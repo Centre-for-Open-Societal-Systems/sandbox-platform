@@ -133,6 +133,10 @@ class Settings(BaseSettings):
     #: above, as before.
     GATEWAY_PROD_ADMIN_URL: str = ""
     GATEWAY_PROD_ADMIN_TOKEN: str = ""
+    #: With GATEWAY_SYNC_ENABLED, pull every gateway on its own this often (hours):
+    #: routes added by the gateway's Helm chart reach the catalogue (unpublished) and
+    #: apps whose route ids changed are re-synced. 0 = only the console's button.
+    GATEWAY_AUTO_PULL_HOURS: int = 24
 
     # ------------------------------------------------- apps and credentials
     # Participants create apps, each with an API key + secret and a set of

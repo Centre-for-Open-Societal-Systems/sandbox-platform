@@ -269,3 +269,23 @@ class ParticipantAppCredential(Base, UniqueIdMixin, AuditMixin):
     expiry_notified_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     app: Mapped[ParticipantApp] = relationship(back_populates="credentials")
+
+
+class GatewayRouteSnapshot(Base):
+    """The routes of one gateway as the last "Pull from gateway" read them.
+
+    One row per gateway (``AdminTarget.environment``: "UAT", or "PRODUCTION" when
+    production runs its own APISIX). App sync resolves an app's route ids from this
+    copy, so approving an app or changing a product needs nothing from the gateway's
+    Admin API once it has been pulled (``app_gateway_service.routes_for``).
+    """
+
+    __tablename__ = "gateway_route_snapshot"
+
+    environment: Mapped[str] = mapped_column(String(16), primary_key=True)
+    gateway_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: ``gateway.GatewayRoute`` as dicts: id, name, service_key, paths, methods, ...
+    routes: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    pulled_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    #: Who pulled: an administrator's name, or "automatic" (GATEWAY_AUTO_PULL_HOURS).
+    pulled_by: Mapped[str | None] = mapped_column(String(200))

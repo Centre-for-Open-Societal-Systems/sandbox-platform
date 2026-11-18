@@ -28,9 +28,15 @@ async def lifespan(_: FastAPI):
     maintenance = (
         asyncio.create_task(_key_maintenance_loop()) if settings.APP_KEY_MAINTENANCE_MINUTES > 0 else None
     )
+    auto_pull = (
+        asyncio.create_task(_gateway_pull_loop())
+        if settings.GATEWAY_SYNC_ENABLED and settings.GATEWAY_AUTO_PULL_HOURS > 0
+        else None
+    )
     yield
-    if maintenance is not None:
-        maintenance.cancel()
+    for task in (maintenance, auto_pull):
+        if task is not None:
+            task.cancel()
     logger.info("Shutting down %s", settings.APP_NAME)
 
 
@@ -62,6 +68,29 @@ async def _key_maintenance_loop() -> None:
     while True:
         await asyncio.to_thread(_run_key_maintenance)
         await asyncio.sleep(settings.APP_KEY_MAINTENANCE_MINUTES * 60)
+
+
+def _run_gateway_pull() -> None:
+    from app.services import gateway_sync_service
+
+    db = SessionLocal()
+    try:
+        for summary in gateway_sync_service.auto_pull(db):
+            logger.info("Automatic gateway pull: %s", summary)
+    except Exception as exc:
+        logger.error("Automatic gateway pull failed: %s", exc)
+        db.rollback()
+    finally:
+        db.close()
+
+
+async def _gateway_pull_loop() -> None:
+    """Pull the gateways every GATEWAY_AUTO_PULL_HOURS. It wakes hourly and pulls only
+    when the last pull (by hand or automatic, by any replica) is that old."""
+    await asyncio.sleep(60)  # let the API finish starting first
+    while True:
+        await asyncio.to_thread(_run_gateway_pull)
+        await asyncio.sleep(min(3600, settings.GATEWAY_AUTO_PULL_HOURS * 3600))
 
 
 def _sync_permission_catalogue() -> None:
