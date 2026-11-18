@@ -39,6 +39,11 @@ want="$CHART_ID api=${API_IMAGE##*:}$(short "$API_DIGEST") web=${WEB_IMAGE##*:}$
 # older than the upgrade timeout below is no longer running: roll back to the last
 # good revision, then upgrade as usual. A younger one may still be running: stop.
 PENDING_STALE_SECONDS=$((16 * 60))
+# The newest revision that ran successfully (deployed now, or superseded since).
+last_good() {
+  helm -n "$NAMESPACE" history "$RELEASE" --max 50 -o json \
+    | jq -r '[.[] | select(.status == "deployed" or .status == "superseded")] | last | .revision // empty'
+}
 latest=$(helm -n "$NAMESPACE" history "$RELEASE" --max 1 -o json | jq -r '.[0] | "\(.revision) \(.status)"')
 read -r latest_rev latest_status <<<"$latest"
 case "$latest_status" in
@@ -51,8 +56,7 @@ case "$latest_status" in
         "another deploy may still be running. Retry after ${PENDING_STALE_SECONDS}s." >&2
       exit 1
     fi
-    good=$(helm -n "$NAMESPACE" history "$RELEASE" --max 50 -o json \
-      | jq -r '[.[] | select(.status == "deployed" or .status == "superseded")] | last | .revision // empty')
+    good=$(last_good)
     if [ -z "$good" ]; then
       echo "Release $RELEASE is stuck $latest_status (revision $latest_rev) with no good revision" \
         "to roll back to; fix it by hand." >&2
@@ -98,13 +102,51 @@ fi
 # --reset-then-reuse-values: defaults of the new chart version, then the values set
 # on the release before (by Ansible: Secret name and anything not in the file), then
 # $VALUES_FILE, then the images below. The file wins where it and the release differ.
-helm -n "$NAMESPACE" upgrade "$RELEASE" "$CHART_DIR" --reset-then-reuse-values \
+# Why the new pods are not Ready, printed into the Jenkins log: pod states, the
+# containers' output (and the previous run's, after a crash), recent events.
+diagnose() {
+  echo "----- pods" >&2
+  kubectl -n "$NAMESPACE" get pods -l app.kubernetes.io/instance="$RELEASE" -o wide >&2 || true
+  for c in api web; do
+    for pod in $(kubectl -n "$NAMESPACE" get pods \
+                   -l app.kubernetes.io/instance="$RELEASE",app.kubernetes.io/component="$c" \
+                   -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+      echo "----- $pod: state" >&2
+      kubectl -n "$NAMESPACE" get pod "$pod" \
+        -o jsonpath='{range .status.containerStatuses[*]}{.name} ready={.ready} restarts={.restartCount} state={.state} last={.lastState}{"\n"}{end}' >&2 || true
+      echo "----- $pod: log" >&2
+      kubectl -n "$NAMESPACE" logs "$pod" --tail=100 >&2 || true
+      echo "----- $pod: log before the last restart" >&2
+      kubectl -n "$NAMESPACE" logs "$pod" --previous --tail=100 >&2 2>/dev/null || echo "(none)" >&2
+    done
+  done
+  echo "----- events" >&2
+  kubectl -n "$NAMESPACE" get events --sort-by=.lastTimestamp 2>/dev/null | tail -n 40 >&2 || true
+}
+
+# Not --atomic: it rolls back before the failed pods can be inspected. On failure,
+# print why, then roll back to the revision that ran before, so a bad build never
+# leaves the sandbox down (the API uses Recreate: its old pod is already gone).
+# 8m covers the API's start-up probe (5 min, including the database wait).
+rollback_to=$(last_good)
+if ! helm -n "$NAMESPACE" upgrade "$RELEASE" "$CHART_DIR" --reset-then-reuse-values \
   -f "$VALUES_FILE" \
   --set api.image.repository="${API_IMAGE%:*}" --set-string api.image.tag="${API_IMAGE##*:}" \
   --set-string api.image.digest="$API_DIGEST" --set api.image.pullPolicy=IfNotPresent \
   --set web.image.repository="${WEB_IMAGE%:*}" --set-string web.image.tag="${WEB_IMAGE##*:}" \
   --set-string web.image.digest="$WEB_DIGEST" --set web.image.pullPolicy=IfNotPresent \
-  "${pull_args[@]}" --description "$want" --wait --timeout 15m
+  "${pull_args[@]}" --description "$want" --wait --timeout 8m; then
+  echo "helm upgrade failed: the new pods did not become Ready. Diagnostics:" >&2
+  diagnose
+  if [ -n "$rollback_to" ]; then
+    echo "Rolling back $RELEASE to revision $rollback_to" >&2
+    helm -n "$NAMESPACE" rollback "$RELEASE" "$rollback_to" --wait --timeout 8m \
+      || echo "Rollback to revision $rollback_to failed too; fix the release by hand." >&2
+  else
+    echo "No earlier good revision to roll back to." >&2
+  fi
+  exit 1
+fi
 kubectl -n "$NAMESPACE" get pods -o wide
 
 # Through the ingress controller on this node (Traefik, or APISIX on hostPort

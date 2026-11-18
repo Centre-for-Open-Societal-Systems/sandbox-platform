@@ -15,10 +15,14 @@ metadata:
   labels:
     app.kubernetes.io/name: {{ .Chart.Name }}
     app.kubernetes.io/instance: {{ .Release.Name }}
-  {{- with .Values.ingress.annotations }}
   annotations:
+    # A rollback to a revision without this Ingress (one deployed with the oan-helm
+    # chart, before the Ingress moved into this chart) must not delete it: that
+    # would take the whole host offline.
+    helm.sh/resource-policy: keep
+    {{- with .Values.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
-  {{- end }}
+    {{- end }}
 spec:
   {{- with .Values.ingress.className }}
   ingressClassName: {{ . }}
