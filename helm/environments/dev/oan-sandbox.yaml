@@ -26,14 +26,16 @@ config:
     # Served under the *.development.oanstaging.com wildcard (DNS and certificate).
     uatUrl: https://partner-api.development.oanstaging.com
     sync:
-      # oauth only reads the routes (viewer key). The Admin API admits only the IPs in its
-      # ip-restriction whitelist, so this cluster's egress IP must be on it.
-      # TODO: this is staging's APISIX and times out from oan_dev, so app sync fails
-      # (the API still starts). Next: dev APISIX's in-cluster admin Service, with the
-      # k3s pod CIDR on its allow-list and its key in GATEWAY_ADMIN_TOKEN.
+      # oauth only reads the routes: GATEWAY_ADMIN_TOKEN in the Secret is the viewer key
+      # (Secret apisix-admin-credentials, key viewer, namespace apisix).
+      # Dev APISIX's own Admin Service on oan_dev (release apisix, namespace apisix; not
+      # staging's https://apisix-admin.oanstaging.com, which this cluster cannot reach).
+      # The Admin API admits by source IP: the API Pod comes from the k3s Pod CIDR
+      # (10.42.0.0/16), which the 10.0.0.0/8 entry of apisix.admin.allow in oan-helm
+      # environments/dev/values/apisix.yaml covers.
       enabled: true
       type: apisix
-      adminUrl: https://apisix-admin.oanstaging.com
+      adminUrl: http://apisix-admin.apisix.svc.cluster.local:9180
     appSync:
       enabled: true
     # Partners call with an app access token (client credentials), not the API key.
