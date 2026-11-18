@@ -1,9 +1,9 @@
-// OAN sandbox CI/CD: sandbox-platform@develop + the latest oan-helm chart on the
+// OAN sandbox CI/CD: sandbox-platform@develop + its own chart (helm/oan-sandbox) on the
 // oan-services-dev k3s VM (release oan-sandbox-1-1794475648, namespace sandbox,
 // APISIX ingress), images in Amazon ECR.
 //
-//   1. Versions  chart = newest oan-helm release tag `oan-sandbox-*` (or CHART_REF),
-//                else oan-helm main, pulled fresh on every run
+//   1. Versions  chart = helm/oan-sandbox of this commit, values
+//                helm/environments/dev/oan-sandbox.yaml; Chart lints and renders them
 //   2. Registry  ECR login; creates the repositories if missing; skips the build
 //                when that chart version and that commit are both already in ECR
 //                (eoan/sandbox-platform/oan-sandbox-api, eoan/sandbox-platform/oan-sandbox-web)
@@ -21,10 +21,9 @@
 // ecr-credential-provider with the instance role oan-services-dev-ecr-pull (the same
 // way a2c and grievance pull). That role needs pull access to eoan/sandbox-platform/*.
 //
-// Builds start when a PR is merged into develop. The 6-hourly timer re-pulls
-// oan-helm, so a new chart release, or a change to
-// charts/oan-sandbox on main while there is no release, is deployed without a
-// sandbox-platform change. Other charts in oan-helm do not cause a redeploy.
+// Builds start when a PR is merged into develop. The chart lives in this repository,
+// so a chart or values change is deployed like any other develop change; nothing
+// is pulled from oan-helm.
 //
 // Jenkins setup: the sandbox.platform GitHub Organization Folder (or a Pipeline
 // from SCM, branch develop); an agent with Docker and git, labelled `docker`,
@@ -69,15 +68,9 @@ pipeline {
   }
 
   // A merged PR (push to develop) starts the build through the GitHub organization
-  // folder's webhook; no polling. The timer runs develop every 6 hours only to pick
-  // up a new oan-helm chart; it rebuilds or redeploys nothing that is already up to date.
-  triggers {
-    cron(env.BRANCH_NAME == null || env.BRANCH_NAME == 'develop' ? 'H H/6 * * *' : '')
-  }
+  // folder's webhook; no polling and no timer.
 
   parameters {
-    string(name: 'CHART_REF', defaultValue: '',
-           description: 'oan-helm tag or branch. Empty: latest oan-sandbox-* release tag, else main.')
     booleanParam(name: 'FORCE_BUILD', defaultValue: false, description: 'Rebuild images even if already in ECR.')
     booleanParam(name: 'FORCE_DEPLOY', defaultValue: false, description: 'Run helm upgrade even if up to date.')
     booleanParam(name: 'PUSH_GHCR', defaultValue: false, description: 'Also push new images to ghcr.io.')
@@ -89,13 +82,15 @@ pipeline {
     // ECR repositories eoan/sandbox-platform/oan-sandbox-api, eoan/sandbox-platform/oan-sandbox-web
     ECR_REPO_PREFIX    = 'eoan/sandbox-platform/oan-sandbox'
     GHCR_PREFIX        = 'ghcr.io/centre-for-open-societal-systems/oan-sandbox'
-    OAN_HELM_REPO      = 'https://github.com/Centre-for-Open-Societal-Systems/oan-helm.git'
+    CHART_DIR          = 'helm/oan-sandbox'
+    // The Ingress (class apisix), image repositories and config of the dev release.
+    VALUES_FILE        = 'helm/environments/dev/oan-sandbox.yaml'
     SANDBOX_HOSTNAME   = 'sandbox.development.oanstaging.com'
     SSH_HOST           = 'ec2-13-234-239-132.ap-south-1.compute.amazonaws.com'
     NAMESPACE          = 'sandbox'
     RELEASE            = 'oan-sandbox-1-1794475648'
-    // The chart has no Ingress; deploy.sh applies one for this class.
-    INGRESS_CLASS      = 'apisix'
+    // Helm in a container for the Chart stage: nothing to install on the agent.
+    HELM = "docker run --rm -u 1000:1000 -e HOME=/tmp -v ${WORKSPACE}/helm:/helm:ro alpine/helm:3.16.3"
     // AWS CLI in a container: nothing to install on the agent.
     AWS = 'docker run --rm -i -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN -e AWS_REGION -e AWS_DEFAULT_REGION amazon/aws-cli:2.15.0'
     // Registry logins stay in this workspace, not in the agent's ~/.docker.
@@ -108,23 +103,11 @@ pipeline {
         script {
           env.COMMIT_TAG = sh(returnStdout: true, script: 'git rev-parse --short=12 HEAD').trim()
 
-          def ref = params.CHART_REF?.trim()
-          if (!ref) {
-            // Newest release by version; a pre-release (1.1.0-rc.1) sorts before its release (1.1.0).
-            ref = sh(returnStdout: true, script: '''
-              git ls-remote --tags --refs "$OAN_HELM_REPO" 'refs/tags/oan-sandbox-*' \
-                | sed 's#.*refs/tags/##' \
-                | while read -r t; do printf '%s %s\\n' "$(echo "${t#oan-sandbox-}" | sed 's/-/~/')" "$t"; done \
-                | sort -V -k1,1 | tail -n 1 | cut -d' ' -f2
-            ''').trim() ?: 'main'
-          }
-          env.CHART_REF_RESOLVED = ref
-          sh 'rm -rf oan-helm && git clone -q --depth 1 --branch "$CHART_REF_RESOLVED" "$OAN_HELM_REPO" oan-helm'
           def version = sh(returnStdout: true,
-                           script: "sed -n 's/^version: *//p' oan-helm/charts/oan-sandbox/Chart.yaml").trim()
-          // Hash of the chart directory only: changes elsewhere in oan-helm do not redeploy.
-          def tree = sh(returnStdout: true, script: 'git -C oan-helm rev-parse --short=12 HEAD:charts/oan-sandbox').trim()
-          env.CHART_ID = "oan-helm ${ref} chart ${version} tree ${tree}"
+                           script: "sed -n 's/^version: *//p' \"$CHART_DIR/Chart.yaml\"").trim()
+          // Hash of helm/ (chart and environment values): a change to either redeploys.
+          def tree = sh(returnStdout: true, script: 'git rev-parse --short=12 HEAD:helm').trim()
+          env.CHART_ID = "sandbox-platform chart ${version} helm tree ${tree}"
           // Images carry the chart version: eoan/sandbox-platform/oan-sandbox-api:1.0.0-dev.19
           if (!(version ==~ /[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}/)) {
             error("Chart version '${version}' is not a valid image tag")
@@ -135,9 +118,22 @@ pipeline {
           if (!(env.IMAGE_TAG ==~ /[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}/)) {
             error("Image tag '${env.IMAGE_TAG}' is not a valid image tag")
           }
-          currentBuild.description = "${env.TAG} (${env.COMMIT_TAG}) / chart ${ref}"
+          currentBuild.description = "${env.TAG} (${env.COMMIT_TAG}) / helm ${tree}"
           echo "Chart: ${env.CHART_ID}"
         }
+      }
+    }
+
+    stage('Chart') {
+      steps {
+        // Every branch and PR: the chart lints and renders with the dev values (placeholder
+        // image tags and Secret name; the real ones are set by Deploy).
+        sh '''
+          SET="--set secret.name=lint --set api.image.tag=lint --set web.image.tag=lint"
+          $HELM lint /$CHART_DIR
+          $HELM lint /$CHART_DIR -f /$VALUES_FILE $SET
+          $HELM template "$RELEASE" /$CHART_DIR -n "$NAMESPACE" -f /$VALUES_FILE $SET >/dev/null
+        '''
       }
     }
 
@@ -273,8 +269,8 @@ pipeline {
             SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$WORKSPACE/deployment/jenkins/known_hosts -o ServerAliveInterval=30 $SSH_USER@$SSH_HOST"
 
             # Deploy the unique <chart version>-<build number> tag. When this run skipped
-            # the build, reuse the newest such tag already on this commit's images, so the
-            # 6-hourly timer runs find the release up to date. Images pushed before these
+            # the build, reuse the newest such tag already on this commit's images, so a
+            # rerun finds the release up to date. Images pushed before these
             # tags existed get this run's tag added (same manifest, no rebuild).
             DEPLOY_TAG=$IMAGE_TAG
             if [ "$NEED_BUILD" != true ]; then
@@ -299,8 +295,8 @@ pipeline {
             fi
             echo "Deploying images tagged $DEPLOY_TAG"
 
-            # The chart at the resolved oan-helm ref.
-            tar -C oan-helm/charts -czf - oan-sandbox \
+            # This commit's helm/: the chart and the environment values.
+            tar -C helm -czf - oan-sandbox environments \
               | $SSH 'rm -rf ~/oan-deploy && mkdir -p ~/oan-deploy && tar -xzf - -C ~/oan-deploy'
 
             # No digests: deploy.sh then clears the digest left on the release and the
@@ -309,8 +305,8 @@ pipeline {
             WEB_DEPLOY="$ECR_REGISTRY/$ECR_REPO_PREFIX-web:$DEPLOY_TAG"
             $SSH "API_IMAGE='$API_DEPLOY' WEB_IMAGE='$WEB_DEPLOY' API_DIGEST='' WEB_DIGEST='' \
               CHART_DIR=\\$HOME/oan-deploy/oan-sandbox \
+              VALUES_FILE=\\$HOME/oan-deploy/environments/dev/oan-sandbox.yaml \
               CHART_ID='$CHART_ID' HOST='$SANDBOX_HOSTNAME' NAMESPACE='$NAMESPACE' RELEASE='$RELEASE' \
-              INGRESS_CLASS='$INGRESS_CLASS' \
               FORCE='$FORCE_DEPLOY' bash -s" < deployment/jenkins/deploy.sh
           '''
         } } }
