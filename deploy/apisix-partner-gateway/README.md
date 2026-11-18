@@ -173,3 +173,12 @@ each with its own values (`keycloak.issuer`, `environmentRole`, hosts).
 
 Do not run `adc sync` against a gateway the Ingress Controller manages: each overwrites the
 other's routes.
+
+### Error answers
+
+Every refusal is JSON (`application/json`), with `WWW-Authenticate: Bearer error="invalid_token"`
+on a 401 (RFC 6750): no token, a token that is not a JWT, an **expired** token ("request a new
+one": tokens last 5 minutes), a token of another realm, one without the audience, and one whose
+signature openid-connect refuses (its bare 401 is rewritten by `response-rewrite`, only while
+the request is still unchecked, so an upstream API's own 401 passes through untouched). 403
+(no access / IP) and 429 (limits) are JSON as well.

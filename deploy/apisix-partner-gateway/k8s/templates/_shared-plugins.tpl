@@ -18,6 +18,7 @@
     - |-
       return function(conf, ctx)
         local core = require("apisix.core")
+        ctx.var.oan_token_state = "unchecked"
         local token = core.request.header(ctx, "X-Partner-Token")
         local upstream = core.request.header(ctx, "Authorization")
         ctx.oan_x_access_token = core.request.header(ctx, "X-Access-Token")
@@ -27,9 +28,37 @@
         end
         if type(token) ~= "string" or token == "" then
           core.response.set_header("WWW-Authenticate", 'Bearer realm="partner"')
+          core.response.set_header("Content-Type", "application/json")
+          ctx.var.oan_token_state = "refused"
           return 401, {message = "Missing app token (X-Partner-Token)"}
         end
         token = token:gsub("^[Bb][Ee][Aa][Rr][Ee][Rr]%s+", "")
+        -- What openid-connect would refuse with a bare 401 (nginx's HTML page) gets a clear JSON
+        -- answer here (RFC 6750 invalid_token). The signature is still checked by openid-connect.
+        local function refuse(message)
+          core.response.set_header("Content-Type", "application/json")
+          ctx.var.oan_token_state = "refused"
+          core.response.set_header("WWW-Authenticate",
+            'Bearer realm="partner", error="invalid_token", error_description="' .. message .. '"')
+          return 401, {error = "invalid_token", message = message}
+        end
+        local header, body = token:match("^([%w_-]+)%.([%w_-]+)%.[%w_-]+$")
+        local claims
+        if body then
+          body = body:gsub("-", "+"):gsub("_", "/")
+          body = body .. string.rep("=", (4 - #body % 4) % 4)
+          claims = core.json.decode(ngx.decode_base64(body) or "")
+        end
+        if type(claims) ~= "table" then
+          return refuse("The app token is not a valid JWT access token")
+        end
+        if type(claims.exp) == "number" and claims.exp <= ngx.time() then
+          return refuse("The app token has expired (tokens are valid for 5 minutes); request a new one")
+        end
+        local issuer = "{{ include "partnerGateway.issuer" .root }}"
+        if issuer ~= "" and claims.iss ~= issuer then
+          return refuse("The app token was not issued by this gateway's Keycloak realm (" .. issuer .. ")")
+        end
         core.request.set_header(ctx, "X-OAN-Upstream-Authorization", upstream)
         core.request.set_header(ctx, "Authorization", "Bearer " .. token)
       end
@@ -84,6 +113,11 @@
     - |-
       return function(conf, ctx)
         local core = require("apisix.core")
+        ctx.var.oan_token_state = "ok"
+        local function deny(code, message)
+          core.response.set_header("Content-Type", "application/json")
+          return code, {message = message}
+        end
         local info = core.request.header(ctx, "X-Userinfo")
         local claims = info and core.json.decode(ngx.decode_base64(info) or "")
         -- jwt-auth with hide_credentials removed it: then the upstream gets no Authorization.
@@ -94,7 +128,7 @@
         core.request.set_header(ctx, "X-Access-Token", ctx.oan_x_access_token)
         if type(claims) ~= "table" or type(claims.participant_uid) ~= "string"
             or type(claims.oan_app) ~= "string" then
-          return 401, {message = "Invalid app token"}
+          return deny(401, "Invalid app token")
         end
         -- Set before the checks below, so a refused call is still logged against its app.
         core.request.set_header(ctx, "X-OAN-Partner-Id", claims.participant_uid)
@@ -114,7 +148,7 @@
             end
           end
           if not meant then
-            return 401, {message = "Token not issued for this gateway"}
+            return deny(401, "Token not issued for this gateway")
           end
         end
         -- The app's API products: the scope this route needs, in the token's scope claim.
@@ -138,7 +172,7 @@
           end
         end
         if not granted then
-          return 403, {message = "This app has no access to this API"}
+          return deny(403, "This app has no access to this API")
         end
         -- The app's IP whitelist (oan_ips; empty = any address). A list that cannot be read
         -- refuses the call rather than letting it through.
@@ -146,7 +180,7 @@
         if type(ips) == "table" and #ips > 0 then
           local matcher = require("resty.ipmatcher").new(ips)
           if not matcher or not matcher:match(ctx.var.remote_addr) then
-            return 403, {message = "This app does not accept calls from your IP address"}
+            return deny(403, "This app does not accept calls from your IP address")
           end
         end
         -- The app's own limits (the most generous of its API products; 0 = none), read by
@@ -161,6 +195,21 @@
           ctx.var.oan_limit_day_key = claims.oan_app .. ":day"
         end
       end
+- name: response-rewrite
+  enable: true
+  config:
+    vars:
+    - - status
+      - ==
+      - 401
+    - - oan_token_state
+      - ==
+      - unchecked
+    headers:
+      set:
+        Content-Type: application/json
+        WWW-Authenticate: Bearer realm="partner", error="invalid_token"
+    body: '{"error":"invalid_token","message":"The app token could not be verified (signature, issuer or required claims); request a new one"}'
 {{- if .root.Values.callLog.enabled }}
 - name: http-logger
   enable: true
@@ -212,6 +261,7 @@
     - |-
       return function(conf, ctx)
         local core = require("apisix.core")
+        ctx.var.oan_token_state = "unchecked"
         local token = core.request.header(ctx, "X-Partner-Token")
         local upstream = core.request.header(ctx, "Authorization")
         ctx.oan_x_access_token = core.request.header(ctx, "X-Access-Token")
@@ -221,9 +271,37 @@
         end
         if type(token) ~= "string" or token == "" then
           core.response.set_header("WWW-Authenticate", 'Bearer realm="partner"')
+          core.response.set_header("Content-Type", "application/json")
+          ctx.var.oan_token_state = "refused"
           return 401, {message = "Missing app token (X-Partner-Token)"}
         end
         token = token:gsub("^[Bb][Ee][Aa][Rr][Ee][Rr]%s+", "")
+        -- What openid-connect would refuse with a bare 401 (nginx's HTML page) gets a clear JSON
+        -- answer here (RFC 6750 invalid_token). The signature is still checked by openid-connect.
+        local function refuse(message)
+          core.response.set_header("Content-Type", "application/json")
+          ctx.var.oan_token_state = "refused"
+          core.response.set_header("WWW-Authenticate",
+            'Bearer realm="partner", error="invalid_token", error_description="' .. message .. '"')
+          return 401, {error = "invalid_token", message = message}
+        end
+        local header, body = token:match("^([%w_-]+)%.([%w_-]+)%.[%w_-]+$")
+        local claims
+        if body then
+          body = body:gsub("-", "+"):gsub("_", "/")
+          body = body .. string.rep("=", (4 - #body % 4) % 4)
+          claims = core.json.decode(ngx.decode_base64(body) or "")
+        end
+        if type(claims) ~= "table" then
+          return refuse("The app token is not a valid JWT access token")
+        end
+        if type(claims.exp) == "number" and claims.exp <= ngx.time() then
+          return refuse("The app token has expired (tokens are valid for 5 minutes); request a new one")
+        end
+        local issuer = "{{ include "partnerGateway.issuer" .root }}"
+        if issuer ~= "" and claims.iss ~= issuer then
+          return refuse("The app token was not issued by this gateway's Keycloak realm (" .. issuer .. ")")
+        end
         core.request.set_header(ctx, "X-OAN-Upstream-Authorization", upstream)
         core.request.set_header(ctx, "Authorization", "Bearer " .. token)
       end
@@ -278,6 +356,11 @@
     - |-
       return function(conf, ctx)
         local core = require("apisix.core")
+        ctx.var.oan_token_state = "ok"
+        local function deny(code, message)
+          core.response.set_header("Content-Type", "application/json")
+          return code, {message = message}
+        end
         local info = core.request.header(ctx, "X-Userinfo")
         local claims = info and core.json.decode(ngx.decode_base64(info) or "")
         -- jwt-auth with hide_credentials removed it: then the upstream gets no Authorization.
@@ -288,7 +371,7 @@
         core.request.set_header(ctx, "X-Access-Token", ctx.oan_x_access_token)
         if type(claims) ~= "table" or type(claims.participant_uid) ~= "string"
             or type(claims.oan_app) ~= "string" then
-          return 401, {message = "Invalid app token"}
+          return deny(401, "Invalid app token")
         end
         -- Set before the checks below, so a refused call is still logged against its app.
         core.request.set_header(ctx, "X-OAN-Partner-Id", claims.participant_uid)
@@ -308,7 +391,7 @@
             end
           end
           if not meant then
-            return 401, {message = "Token not issued for this gateway"}
+            return deny(401, "Token not issued for this gateway")
           end
         end
         -- The app's API products: the scope this route needs, in the token's scope claim.
@@ -332,7 +415,7 @@
           end
         end
         if not granted then
-          return 403, {message = "This app has no access to this API"}
+          return deny(403, "This app has no access to this API")
         end
         -- The app's IP whitelist (oan_ips; empty = any address). A list that cannot be read
         -- refuses the call rather than letting it through.
@@ -340,7 +423,7 @@
         if type(ips) == "table" and #ips > 0 then
           local matcher = require("resty.ipmatcher").new(ips)
           if not matcher or not matcher:match(ctx.var.remote_addr) then
-            return 403, {message = "This app does not accept calls from your IP address"}
+            return deny(403, "This app does not accept calls from your IP address")
           end
         end
         -- The app's own limits (the most generous of its API products; 0 = none), read by
@@ -355,6 +438,21 @@
           ctx.var.oan_limit_day_key = claims.oan_app .. ":day"
         end
       end
+- name: response-rewrite
+  enable: true
+  config:
+    vars:
+    - - status
+      - ==
+      - 401
+    - - oan_token_state
+      - ==
+      - unchecked
+    headers:
+      set:
+        Content-Type: application/json
+        WWW-Authenticate: Bearer realm="partner", error="invalid_token"
+    body: '{"error":"invalid_token","message":"The app token could not be verified (signature, issuer or required claims); request a new one"}'
 {{- if .root.Values.callLog.enabled }}
 - name: http-logger
   enable: true
@@ -406,6 +504,7 @@
     - |-
       return function(conf, ctx)
         local core = require("apisix.core")
+        ctx.var.oan_token_state = "unchecked"
         local token = core.request.header(ctx, "X-Partner-Token")
         local upstream = core.request.header(ctx, "Authorization")
         ctx.oan_x_access_token = core.request.header(ctx, "X-Access-Token")
@@ -415,9 +514,37 @@
         end
         if type(token) ~= "string" or token == "" then
           core.response.set_header("WWW-Authenticate", 'Bearer realm="partner"')
+          core.response.set_header("Content-Type", "application/json")
+          ctx.var.oan_token_state = "refused"
           return 401, {message = "Missing app token (X-Partner-Token)"}
         end
         token = token:gsub("^[Bb][Ee][Aa][Rr][Ee][Rr]%s+", "")
+        -- What openid-connect would refuse with a bare 401 (nginx's HTML page) gets a clear JSON
+        -- answer here (RFC 6750 invalid_token). The signature is still checked by openid-connect.
+        local function refuse(message)
+          core.response.set_header("Content-Type", "application/json")
+          ctx.var.oan_token_state = "refused"
+          core.response.set_header("WWW-Authenticate",
+            'Bearer realm="partner", error="invalid_token", error_description="' .. message .. '"')
+          return 401, {error = "invalid_token", message = message}
+        end
+        local header, body = token:match("^([%w_-]+)%.([%w_-]+)%.[%w_-]+$")
+        local claims
+        if body then
+          body = body:gsub("-", "+"):gsub("_", "/")
+          body = body .. string.rep("=", (4 - #body % 4) % 4)
+          claims = core.json.decode(ngx.decode_base64(body) or "")
+        end
+        if type(claims) ~= "table" then
+          return refuse("The app token is not a valid JWT access token")
+        end
+        if type(claims.exp) == "number" and claims.exp <= ngx.time() then
+          return refuse("The app token has expired (tokens are valid for 5 minutes); request a new one")
+        end
+        local issuer = "{{ include "partnerGateway.issuer" .root }}"
+        if issuer ~= "" and claims.iss ~= issuer then
+          return refuse("The app token was not issued by this gateway's Keycloak realm (" .. issuer .. ")")
+        end
         core.request.set_header(ctx, "X-OAN-Upstream-Authorization", upstream)
         core.request.set_header(ctx, "Authorization", "Bearer " .. token)
       end
@@ -472,6 +599,11 @@
     - |-
       return function(conf, ctx)
         local core = require("apisix.core")
+        ctx.var.oan_token_state = "ok"
+        local function deny(code, message)
+          core.response.set_header("Content-Type", "application/json")
+          return code, {message = message}
+        end
         local info = core.request.header(ctx, "X-Userinfo")
         local claims = info and core.json.decode(ngx.decode_base64(info) or "")
         -- jwt-auth with hide_credentials removed it: then the upstream gets no Authorization.
@@ -482,7 +614,7 @@
         core.request.set_header(ctx, "X-Access-Token", ctx.oan_x_access_token)
         if type(claims) ~= "table" or type(claims.participant_uid) ~= "string"
             or type(claims.oan_app) ~= "string" then
-          return 401, {message = "Invalid app token"}
+          return deny(401, "Invalid app token")
         end
         -- Set before the checks below, so a refused call is still logged against its app.
         core.request.set_header(ctx, "X-OAN-Partner-Id", claims.participant_uid)
@@ -502,7 +634,7 @@
             end
           end
           if not meant then
-            return 401, {message = "Token not issued for this gateway"}
+            return deny(401, "Token not issued for this gateway")
           end
         end
         -- The app's API products: the scope this route needs, in the token's scope claim.
@@ -526,7 +658,7 @@
           end
         end
         if not granted then
-          return 403, {message = "This app has no access to this API"}
+          return deny(403, "This app has no access to this API")
         end
         -- The app's IP whitelist (oan_ips; empty = any address). A list that cannot be read
         -- refuses the call rather than letting it through.
@@ -534,7 +666,7 @@
         if type(ips) == "table" and #ips > 0 then
           local matcher = require("resty.ipmatcher").new(ips)
           if not matcher or not matcher:match(ctx.var.remote_addr) then
-            return 403, {message = "This app does not accept calls from your IP address"}
+            return deny(403, "This app does not accept calls from your IP address")
           end
         end
         -- The app's own limits (the most generous of its API products; 0 = none), read by
@@ -549,6 +681,21 @@
           ctx.var.oan_limit_day_key = claims.oan_app .. ":day"
         end
       end
+- name: response-rewrite
+  enable: true
+  config:
+    vars:
+    - - status
+      - ==
+      - 401
+    - - oan_token_state
+      - ==
+      - unchecked
+    headers:
+      set:
+        Content-Type: application/json
+        WWW-Authenticate: Bearer realm="partner", error="invalid_token"
+    body: '{"error":"invalid_token","message":"The app token could not be verified (signature, issuer or required claims); request a new one"}'
 {{- if .root.Values.callLog.enabled }}
 - name: http-logger
   enable: true
@@ -600,6 +747,7 @@
     - |-
       return function(conf, ctx)
         local core = require("apisix.core")
+        ctx.var.oan_token_state = "unchecked"
         local token = core.request.header(ctx, "X-Partner-Token")
         local upstream = core.request.header(ctx, "Authorization")
         ctx.oan_x_access_token = core.request.header(ctx, "X-Access-Token")
@@ -609,9 +757,37 @@
         end
         if type(token) ~= "string" or token == "" then
           core.response.set_header("WWW-Authenticate", 'Bearer realm="partner"')
+          core.response.set_header("Content-Type", "application/json")
+          ctx.var.oan_token_state = "refused"
           return 401, {message = "Missing app token (X-Partner-Token)"}
         end
         token = token:gsub("^[Bb][Ee][Aa][Rr][Ee][Rr]%s+", "")
+        -- What openid-connect would refuse with a bare 401 (nginx's HTML page) gets a clear JSON
+        -- answer here (RFC 6750 invalid_token). The signature is still checked by openid-connect.
+        local function refuse(message)
+          core.response.set_header("Content-Type", "application/json")
+          ctx.var.oan_token_state = "refused"
+          core.response.set_header("WWW-Authenticate",
+            'Bearer realm="partner", error="invalid_token", error_description="' .. message .. '"')
+          return 401, {error = "invalid_token", message = message}
+        end
+        local header, body = token:match("^([%w_-]+)%.([%w_-]+)%.[%w_-]+$")
+        local claims
+        if body then
+          body = body:gsub("-", "+"):gsub("_", "/")
+          body = body .. string.rep("=", (4 - #body % 4) % 4)
+          claims = core.json.decode(ngx.decode_base64(body) or "")
+        end
+        if type(claims) ~= "table" then
+          return refuse("The app token is not a valid JWT access token")
+        end
+        if type(claims.exp) == "number" and claims.exp <= ngx.time() then
+          return refuse("The app token has expired (tokens are valid for 5 minutes); request a new one")
+        end
+        local issuer = "{{ include "partnerGateway.issuer" .root }}"
+        if issuer ~= "" and claims.iss ~= issuer then
+          return refuse("The app token was not issued by this gateway's Keycloak realm (" .. issuer .. ")")
+        end
         core.request.set_header(ctx, "X-OAN-Upstream-Authorization", upstream)
         core.request.set_header(ctx, "Authorization", "Bearer " .. token)
       end
@@ -666,6 +842,11 @@
     - |-
       return function(conf, ctx)
         local core = require("apisix.core")
+        ctx.var.oan_token_state = "ok"
+        local function deny(code, message)
+          core.response.set_header("Content-Type", "application/json")
+          return code, {message = message}
+        end
         local info = core.request.header(ctx, "X-Userinfo")
         local claims = info and core.json.decode(ngx.decode_base64(info) or "")
         -- jwt-auth with hide_credentials removed it: then the upstream gets no Authorization.
@@ -676,7 +857,7 @@
         core.request.set_header(ctx, "X-Access-Token", ctx.oan_x_access_token)
         if type(claims) ~= "table" or type(claims.participant_uid) ~= "string"
             or type(claims.oan_app) ~= "string" then
-          return 401, {message = "Invalid app token"}
+          return deny(401, "Invalid app token")
         end
         -- Set before the checks below, so a refused call is still logged against its app.
         core.request.set_header(ctx, "X-OAN-Partner-Id", claims.participant_uid)
@@ -696,7 +877,7 @@
             end
           end
           if not meant then
-            return 401, {message = "Token not issued for this gateway"}
+            return deny(401, "Token not issued for this gateway")
           end
         end
         -- The app's API products: the scope this route needs, in the token's scope claim.
@@ -720,7 +901,7 @@
           end
         end
         if not granted then
-          return 403, {message = "This app has no access to this API"}
+          return deny(403, "This app has no access to this API")
         end
         -- The app's IP whitelist (oan_ips; empty = any address). A list that cannot be read
         -- refuses the call rather than letting it through.
@@ -728,7 +909,7 @@
         if type(ips) == "table" and #ips > 0 then
           local matcher = require("resty.ipmatcher").new(ips)
           if not matcher or not matcher:match(ctx.var.remote_addr) then
-            return 403, {message = "This app does not accept calls from your IP address"}
+            return deny(403, "This app does not accept calls from your IP address")
           end
         end
         -- The app's own limits (the most generous of its API products; 0 = none), read by
@@ -743,6 +924,21 @@
           ctx.var.oan_limit_day_key = claims.oan_app .. ":day"
         end
       end
+- name: response-rewrite
+  enable: true
+  config:
+    vars:
+    - - status
+      - ==
+      - 401
+    - - oan_token_state
+      - ==
+      - unchecked
+    headers:
+      set:
+        Content-Type: application/json
+        WWW-Authenticate: Bearer realm="partner", error="invalid_token"
+    body: '{"error":"invalid_token","message":"The app token could not be verified (signature, issuer or required claims); request a new one"}'
 {{- if .root.Values.callLog.enabled }}
 - name: http-logger
   enable: true
