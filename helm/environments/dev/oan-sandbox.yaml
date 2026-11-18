@@ -1,0 +1,77 @@
+# Values for the oan-sandbox chart (helm/oan-sandbox) on oan_dev (k3s VM 13.234.239.132).
+# Release `oan-sandbox-1-1794475648`, namespace `sandbox`, APISIX ingress.
+# Taken from oan-helm environments/dev/values/sandbox.yaml; check against the live
+# release before the first upgrade with it:
+#   helm -n sandbox get values oan-sandbox-1-1794475648
+#
+# Set at install, not here:
+# - api.image.tag / web.image.tag: the Jenkins tag <chart version>-<build number>
+# - secret.name: the existing Secret in namespace sandbox (DB_PASSWORD, JWT_*; see values.yaml)
+
+global:
+  hostname: sandbox.development.oanstaging.com
+
+config:
+  appEnv: sandbox
+  debug: false
+  db:
+    host: commons-postgresql.commons.svc.cluster.local
+    port: 5432
+    name: sandbox_db_oan
+    user: sandbox
+  gateway:
+    enabled: true
+    # Dev APISIX, partner routes of chart oan-partner-gateway (deploy/apisix-partner-gateway).
+    uatUrl: https://partner-api-dev.oanstaging.com
+    sync:
+      # oauth only reads the routes (viewer key). The Admin API admits only the IPs in its
+      # ip-restriction whitelist, so this cluster's egress IP must be on it.
+      enabled: true
+      type: apisix
+      adminUrl: https://apisix-admin.oanstaging.com
+    appSync:
+      enabled: true
+    # Partners call with an app access token (client credentials), not the API key.
+    partnerAuth: oauth
+    tokenHeader: X-Partner-Token
+    logIngest:
+      enabled: false
+    rateLimit:
+      enabled: false
+  keycloak:
+    enabled: true
+    url: https://keycloak.development.oanstaging.com
+    publicUrl: https://keycloak.development.oanstaging.com
+    # Set up on 2026-11-05 with setup_partner_realm.py: oan-partner-api,
+    # oan-sandbox-provisioner, oan-sandbox-portal, attribute participant_uid.
+    realm: partner
+    participantAuth: keycloak
+  # Consent Manager partner portal: off until its client is confirmed in the realm.
+  partnerPortal:
+    clientId: ""
+  partnerManagement:
+    enabled: false
+
+api:
+  enabled: true
+  image:
+    # Jenkinsfile ECR_REPO_PREFIX + "-api". The node pulls with the instance role
+    # oan-services-dev-ecr-pull (k3s ecr-credential-provider), so no pull Secret.
+    repository: 379220350808.dkr.ecr.ap-south-1.amazonaws.com/eoan/sandbox-platform/oan-sandbox-api
+  imagePullSecrets: []
+
+web:
+  enabled: true
+  image:
+    # Built with NEXT_PUBLIC_API_BASE_URL=https://sandbox.development.oanstaging.com/oan.
+    repository: 379220350808.dkr.ecr.ap-south-1.amazonaws.com/eoan/sandbox-platform/oan-sandbox-web
+  imagePullSecrets: []
+
+# No Istio on oan_dev: APISIX serves the host through a plain Ingress.
+virtualService:
+  enabled: false
+
+ingress:
+  enabled: true
+  # The only IngressClass on oan_dev and not the default one: without it no controller serves the host.
+  className: apisix
