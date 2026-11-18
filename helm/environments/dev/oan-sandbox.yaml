@@ -25,34 +25,35 @@ config:
     # Dev APISIX on oan_dev, partner routes of chart oan-partner-gateway (deploy/apisix-partner-gateway).
     # Served under the *.development.oanstaging.com wildcard (DNS and certificate).
     uatUrl: https://partner-api.development.oanstaging.com
-    # Off until dev reaches an APISIX Admin API: https://apisix-admin.oanstaging.com
-    # (staging's) times out from oan_dev. Next: dev APISIX's in-cluster admin Service,
-    # with the k3s pod CIDR on its allow-list and its key in GATEWAY_ADMIN_TOKEN.
     sync:
-      enabled: false
+      # oauth only reads the routes (viewer key). The Admin API admits only the IPs in its
+      # ip-restriction whitelist, so this cluster's egress IP must be on it.
+      # TODO: this is staging's APISIX and times out from oan_dev, so app sync fails
+      # (the API still starts). Next: dev APISIX's in-cluster admin Service, with the
+      # k3s pod CIDR on its allow-list and its key in GATEWAY_ADMIN_TOKEN.
+      enabled: true
       type: apisix
-      adminUrl: ""
+      adminUrl: https://apisix-admin.oanstaging.com
     appSync:
-      enabled: false
-    # API key until Keycloak is on (below); oauth needs keycloak.enabled and appSync.
-    partnerAuth: apikey
+      enabled: true
+    # Partners call with an app access token (client credentials), not the API key.
+    partnerAuth: oauth
     tokenHeader: X-Partner-Token
     logIngest:
       enabled: false
     rateLimit:
       enabled: false
-  # Off until oan-sandbox-secrets holds KEYCLOAK_ADMIN_CLIENT_SECRET and
-  # KEYCLOAK_LOGIN_CLIENT_SECRET: with participantAuth keycloak the API refuses to
-  # start without them. To turn on: enabled true, participantAuth keycloak, and
-  # gateway partnerAuth oauth with appSync and sync enabled.
+  # Needs KEYCLOAK_LOGIN_CLIENT_SECRET (oan-sandbox-portal) and
+  # KEYCLOAK_ADMIN_CLIENT_SECRET (oan-sandbox-provisioner) in oan-sandbox-secrets:
+  # without the login secret the API refuses to start.
   keycloak:
-    enabled: false
+    enabled: true
     url: https://keycloak.development.oanstaging.com
     publicUrl: https://keycloak.development.oanstaging.com
     # Set up on 2026-11-05 with setup_partner_realm.py: oan-partner-api,
     # oan-sandbox-provisioner, oan-sandbox-portal, attribute participant_uid.
     realm: partner
-    participantAuth: local
+    participantAuth: keycloak
   # Consent Manager partner portal: off until its client is confirmed in the realm.
   partnerPortal:
     clientId: ""
