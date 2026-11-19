@@ -173,15 +173,28 @@ def _read_apisix(client: httpx.Client) -> GatewaySnapshot:
     services = {
         item["id"]: item for item in _apisix_list(client, "/apisix/admin/services")
     }
+    listed = _apisix_list(client, "/apisix/admin/routes")
+    # Plugins shared by several routes (a plugin config, e.g. the app token check of the
+    # partner routes): read only when a route points at one.
+    shared = (
+        {item["id"]: item for item in _apisix_list(client, "/apisix/admin/plugin_configs")}
+        if any(route.get("plugin_config_id") for route in listed)
+        else {}
+    )
     routes = []
-    for route in _apisix_list(client, "/apisix/admin/routes"):
+    for route in listed:
         service = services.get(route.get("service_id")) or {}
         uris = route.get("uris") or ([route["uri"]] if route.get("uri") else [])
         paths, skipped = [], []
         for uri in uris:
             path = apisix_uri_to_path(uri)
             (paths if path else skipped).append(path or uri)
-        plugins = {**(service.get("plugins") or {}), **(route.get("plugins") or {})}
+        # As APISIX merges them: the service first, then the plugin config, then the route.
+        plugins = {
+            **(service.get("plugins") or {}),
+            **((shared.get(route.get("plugin_config_id")) or {}).get("plugins") or {}),
+            **(route.get("plugins") or {}),
+        }
         auth_header, auth_hint = _auth_from_plugins(plugins, route.get("labels") or {})
         routes.append(
             GatewayRoute(

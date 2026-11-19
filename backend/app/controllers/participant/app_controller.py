@@ -64,6 +64,19 @@ def promote_app(app_id: str, current: CurrentParticipant, db: DbSession, payload
     )
 
 
+@router.get("/data-access")
+def data_access(current: CurrentParticipant, db: DbSession):
+    """The Partner Management policies the sandbox asked for on the participant's behalf
+    (what data its API products let it request) and where each stands."""
+    from app.services import pm_policy_service
+
+    rows = [
+        {k: v for k, v in row.items() if k not in ("request_id", "error")}
+        for row in pm_policy_service.rows_out(db, current.id)
+    ]
+    return ok("Data access.", {"policies": rows})
+
+
 @router.get("/apps")
 def list_apps(current: CurrentParticipant, db: DbSession):
     apps = app_service.list_apps(db, current.participant)

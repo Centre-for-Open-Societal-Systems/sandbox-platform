@@ -1,5 +1,5 @@
-# Hand-written, not generated: generate_k8s_chart.py writes only apisix-route.yaml and
-# apisix-upstream.yaml. Same shape as the grievance chart's ApisixTls.
+# Hand-written, not generated: generate_k8s_chart.py does not write this file or
+# _helpers.tpl. Same shape as the grievance chart's ApisixTls.
 # Apps share the gateway and are told apart by host, so every route needs `hosts`.
 {{- if not .Values.hosts }}
 {{- fail "hosts is required: the public host names partners call" }}

@@ -49,8 +49,9 @@ class FakeKeycloakClients:
         return jwt.PyJWK.from_dict({**jwt.algorithms.RSAAlgorithm.to_jwk(REALM_KEY.public_key(), as_dict=True),
                                     "kid": REALM_KID, "alg": "RS256"})
 
-    def upsert(self, client_id, secret, app_uid, description, claims):
-        self.clients[client_id] = {"secret": secret, "app_uid": app_uid, "claims": claims}
+    def upsert(self, client_id, secret, app_uid, description, claims, scopes=None, audience="", jwks=None):
+        self.clients[client_id] = {"secret": secret, "app_uid": app_uid, "claims": claims,
+                                   "scopes": list(scopes or []), "audience": audience, "jwks": jwks}
 
     def token(self, client_id, secret):
         assert self.clients[client_id]["secret"] == secret
@@ -58,6 +59,10 @@ class FakeKeycloakClients:
         now = int(time.time())
         claims = {"iss": "http://kc/realms/partner", "azp": client_id, "iat": now, "exp": now + 300,
                   "sub": "service-account", **self.clients[client_id]["claims"]}
+        if self.clients[client_id]["scopes"]:
+            claims["scope"] = " ".join(self.clients[client_id]["scopes"])
+        if self.clients[client_id]["audience"]:
+            claims["aud"] = self.clients[client_id]["audience"]
         return {"access_token": jwt.encode(claims, REALM_KEY, algorithm="RS256", headers={"kid": REALM_KID}),
                 "token_type": "Bearer", "expires_in": 300}
 
@@ -97,6 +102,36 @@ def test_approved_app_key_becomes_an_oauth_client(
     assert created["app"]["gateway_status"] == "SYNCED"
     # the routes check the token: no consumer, no credential, nothing written to the gateway
     assert writes == [] and fake.consumers == {}
+
+
+def test_ip_whitelist_and_product_limits_travel_in_the_token(
+    client, admin_headers, participant_headers, farmer_endpoints, kc, monkeypatch
+):
+    """No consumer holds them in oauth mode: the routes read them from the token."""
+    FakeGateway(_routes()).install(monkeypatch)
+    payload = {"name": "farmer-limited", "display_name": "farmer-limited", "approval_type": "AUTO",
+               "is_published": True, "endpoint_ids": farmer_endpoints[:2],
+               "rate_limit_per_minute": 60, "quota_per_day": 5000}
+    limited = client.post("/oan/admin/api-products", headers=admin_headers, json=payload).json()["data"]["api_product_id"]
+
+    created = _create_app(client, participant_headers, "Server App", [limited], admin_headers)
+    key = created["credential"]["api_key"]
+    claims = kc.clients[key]["claims"]
+    # limits are off unless GATEWAY_RATE_LIMIT_ENABLED; no whitelist = any address
+    assert (claims["oan_ips"], claims["oan_limit_minute"], claims["oan_limit_day"]) == ([], "0", "0")
+
+    monkeypatch.setattr(settings, "GATEWAY_RATE_LIMIT_ENABLED", True)
+    saved = client.put(f"/oan/participant/apps/{created['app']['app_id']}", headers=participant_headers,
+                       json={"allowed_ips": ["203.0.113.10", "198.51.100.0/24"]})
+    assert saved.status_code == 200, saved.text
+    claims = kc.clients[key]["claims"]
+    assert claims["oan_ips"] == ["203.0.113.10", "198.51.100.0/24"]
+    assert (claims["oan_limit_minute"], claims["oan_limit_day"]) == ("60", "5000")
+
+    cleared = client.put(f"/oan/participant/apps/{created['app']['app_id']}", headers=participant_headers,
+                         json={"allowed_ips": []})
+    assert cleared.status_code == 200, cleared.text
+    assert kc.clients[key]["claims"]["oan_ips"] == []
 
 
 def test_revoked_key_and_deleted_app_lose_their_clients(

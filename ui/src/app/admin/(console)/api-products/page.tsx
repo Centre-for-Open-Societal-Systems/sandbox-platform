@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, Plus } from "lucide-react";
 
 import { limitText } from "@/components/apps/app-ui";
+import { PmPolicyFields } from "@/components/apps/pm-policy-fields";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/components/ui/confirm-dialog";
@@ -38,6 +39,7 @@ const EMPTY_FORM: ApiProductPayload = {
   endpoint_ids: [],
   rate_limit_per_minute: null,
   quota_per_day: null,
+  pm_policy: null,
 };
 
 /** Empty input = no limit. */
@@ -256,6 +258,7 @@ function ApiProductDialog({
       endpoint_ids: detail.endpoints.map((e) => e.endpoint_id),
       rate_limit_per_minute: detail.rate_limit_per_minute,
       quota_per_day: detail.quota_per_day,
+      pm_policy: detail.pm_policy ?? null,
     });
   }
 
@@ -430,7 +433,32 @@ function ApiProductDialog({
                   <span className="block text-xs text-subtle">Participants can request it for their apps.</span>
                 </span>
               </label>
+              {loaded ? (
+                <PmPolicyFields value={form.pm_policy} onChange={(pm_policy) => setForm({ ...form, pm_policy })} />
+              ) : null}
             </div>
+
+            {detailQuery.data?.gateway_scopes?.length ? (
+              <div className="rounded-lg border border-border p-3 text-xs">
+                <p className="mb-2 font-semibold">Gateway scopes this product grants</p>
+                <ul className="space-y-1">
+                  {detailQuery.data.gateway_scopes.map((s) => (
+                    <li key={s.scope} className="flex flex-wrap items-center gap-2">
+                      <code className="rounded bg-muted px-1.5 py-0.5">{s.scope}</code>
+                      <span className="text-subtle">
+                        {s.in_product} of {s.total} end-point{s.total === 1 ? "" : "s"}
+                      </span>
+                      {!s.whole_api ? (
+                        <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-800">
+                          The scope also opens the {s.total - s.in_product} end-point
+                          {s.total - s.in_product === 1 ? "" : "s"} not listed here
+                        </span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
 
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between gap-3">

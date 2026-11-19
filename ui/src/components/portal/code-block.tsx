@@ -54,12 +54,24 @@ export function CodeBlock({
   wrap?: boolean;
 }) {
   return (
+    // This box is the only scroll container: the theme's <pre> scrolls on its own, which put
+    // the sideways scrollbar right under a short body (mid-box) instead of at the box's bottom.
     <div className={cn("overflow-auto rounded-xl bg-[#282a36] text-xs", className)}>
       <SyntaxHighlighter
         language={language}
         style={dracula}
         wrapLongLines={wrap}
-        customStyle={{ margin: 0, padding: "1rem", background: "transparent", fontSize: "0.75rem", lineHeight: 1.6 }}
+        customStyle={{
+          margin: 0,
+          padding: "1rem",
+          background: "transparent",
+          fontSize: "0.75rem",
+          lineHeight: 1.6,
+          overflow: "visible",
+          // As wide as its longest line, so the box scrolls sideways and the padding stays
+          // around long lines; wrapped code keeps the box's width.
+          ...(wrap ? {} : { width: "max-content", minWidth: "100%" }),
+        }}
         codeTagProps={{ style: { fontFamily: "var(--font-mono)" } }}
       >
         {code}

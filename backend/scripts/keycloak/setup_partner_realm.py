@@ -25,6 +25,10 @@ create it) and the script checks that its portal client, the client role and
 the ``partner_id`` user attribute are in place - they belong to the CM chart,
 so they are reported, not changed.
 
+``--users-only``: once app clients live in their own realm (KEYCLOAK_APPS_REALM,
+``setup_app_realm.py``) and every app was re-synced, the provisioner here keeps
+only the user roles: ``manage-clients`` is taken away.
+
 ``--delete-old-clients`` removes the per-participant clients ``oanp-*`` made
 before 26 Oct 2026 (one client per participant did not scale).
 
@@ -71,6 +75,8 @@ def main() -> int:
     parser.add_argument("--portal-role", default="PARTNER_OPERATOR")
     parser.add_argument("--partner-id-attribute", default="partner_id")
     parser.add_argument("--delete-old-clients", action="store_true", help="Remove the old oanp-* clients")
+    parser.add_argument("--users-only", action="store_true",
+                        help="App clients live in KEYCLOAK_APPS_REALM: no manage-clients for the provisioner here")
     args = parser.parse_args()
     user, password = os.environ.get("KC_ADMIN_USER", "admin"), os.environ.get("KC_ADMIN_PASSWORD")
     if not password:
@@ -109,7 +115,8 @@ def main() -> int:
 
     _user_profile_attribute(http, realm)
     _partner_client(http, realm, args.partner_client_id, args.token_lifespan)
-    provisioner = _provisioner(http, realm, args.client_id)
+    roles = tuple(r for r in PROVISIONER_ROLES if r != "manage-clients") if args.users_only else PROVISIONER_ROLES
+    provisioner = _provisioner(http, realm, args.client_id, roles)
     login_client = _login_client(http, realm, args.login_client_id, args.partner_client_id)
     _report_realm(http, realm)
     portal_ok = not args.portal_client_id or _check_portal(http, realm, args)
@@ -314,7 +321,7 @@ def _report_realm(http: httpx.Client, realm: str) -> None:
         print("NOTE: refresh tokens are not rotated (Realm settings > Tokens > Revoke refresh token).")
 
 
-def _provisioner(http: httpx.Client, realm: str, client_id: str) -> str:
+def _provisioner(http: httpx.Client, realm: str, client_id: str, roles: tuple[str, ...] = PROVISIONER_ROLES) -> str:
     clients = http.get(f"/{realm}/clients", params={"clientId": client_id}).json()
     if not clients:
         http.post(f"/{realm}/clients", json={
@@ -340,11 +347,11 @@ def _provisioner(http: httpx.Client, realm: str, client_id: str) -> str:
     available = {r["name"]: r for r in http.get(f"/{realm}/clients/{management}/roles").json()}
     current = {r["name"]: r for r in http.get(path).json()}
     # Exactly these roles: anything else (e.g. manage-clients from the old setup) is taken away.
-    extra = [role for name, role in current.items() if name not in PROVISIONER_ROLES]
+    extra = [role for name, role in current.items() if name not in roles]
     if extra:
         http.request("DELETE", path, json=extra).raise_for_status()
-    http.post(path, json=[available[name] for name in PROVISIONER_ROLES]).raise_for_status()
-    print(f"service account roles: {', '.join(PROVISIONER_ROLES)}"
+    http.post(path, json=[available[name] for name in roles]).raise_for_status()
+    print(f"service account roles: {', '.join(roles)}"
           + (f" (removed: {', '.join(r['name'] for r in extra)})" if extra else ""))
     return provisioner
 

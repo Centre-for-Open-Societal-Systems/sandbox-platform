@@ -15,6 +15,11 @@ cached until shortly before it expires.
 Realm, shared client, roles and token claims are set up once by
 ``scripts/keycloak/setup_partner_realm.py``.
 
+App clients may live in a realm of their own (``KEYCLOAK_APPS_REALM``, e.g.
+``partner-sandbox-app``) on the main Keycloak, apart from the partners' users:
+``realm_for`` then returns it for UAT apps (and production apps, unless
+production has its own Keycloak), with its own service account.
+
 Production may run its own Keycloak (``KEYCLOAK_PROD_URL``). App clients of
 production (GATEWAY_PARTNER_AUTH=oauth) are then written there: every call in
 a ``with use_realm(realm_for("PRODUCTION"))`` block goes to that realm, with
@@ -87,12 +92,31 @@ def main_realm() -> Realm:
     )
 
 
+def apps_realm() -> Realm | None:
+    """The sandbox apps' own realm on the main Keycloak (KEYCLOAK_APPS_REALM), or None
+    when app clients live in KEYCLOAK_REALM with the users."""
+    name = settings.KEYCLOAK_APPS_REALM.strip()
+    if not name or name == settings.KEYCLOAK_REALM:
+        return None
+    url = settings.KEYCLOAK_URL
+    return Realm(
+        environment="UAT",
+        url=url,
+        public_url=settings.KEYCLOAK_PUBLIC_URL,
+        name=name,
+        admin_client_id=settings.KEYCLOAK_APPS_ADMIN_CLIENT_ID or settings.KEYCLOAK_ADMIN_CLIENT_ID,
+        admin_client_secret=settings.KEYCLOAK_APPS_ADMIN_CLIENT_SECRET or settings.KEYCLOAK_ADMIN_CLIENT_SECRET,
+        certs_url=f"{url.rstrip('/')}/realms/{name}/protocol/openid-connect/certs",
+        url_setting="KEYCLOAK_APPS_REALM",
+    )
+
+
 def production_realm() -> Realm | None:
     """Production's own Keycloak (KEYCLOAK_PROD_*), or None when production uses the main one."""
     if not settings.KEYCLOAK_PROD_URL:
         return None
     url = settings.KEYCLOAK_PROD_URL
-    name = settings.KEYCLOAK_PROD_REALM or settings.KEYCLOAK_REALM
+    name = settings.KEYCLOAK_PROD_REALM or settings.KEYCLOAK_APPS_REALM.strip() or settings.KEYCLOAK_REALM
     return Realm(
         environment=PRODUCTION,
         url=url,
@@ -113,8 +137,21 @@ def separate_production() -> bool:
 def realm_for(environment: str) -> Realm:
     """The realm holding ``environment``'s app clients."""
     if str(environment).upper() == PRODUCTION:
-        return production_realm() or main_realm()
-    return main_realm()
+        return production_realm() or apps_realm() or main_realm()
+    return apps_realm() or main_realm()
+
+
+def app_realms() -> list[Realm]:
+    """Every realm that may hold app clients (main, apps, production), each once."""
+    seen: dict[tuple[str, str], Realm] = {}
+    for realm in (main_realm(), apps_realm(), production_realm()):
+        if realm is not None:
+            seen.setdefault((realm.url.rstrip("/"), realm.name), realm)
+    return list(seen.values())
+
+
+def same_realm(a: Realm, b: Realm) -> bool:
+    return (a.url.rstrip("/"), a.name) == (b.url.rstrip("/"), b.name)
 
 
 _active: ContextVar[Realm | None] = ContextVar("keycloak_realm", default=None)
@@ -148,6 +185,8 @@ def is_configured() -> bool:
 def _realm_configured(realm: Realm) -> bool:
     if realm.url_setting == "KEYCLOAK_URL":
         return is_configured()
+    if realm.url_setting == "KEYCLOAK_APPS_REALM":
+        return is_configured() and bool(realm.admin_client_id and realm.admin_client_secret)
     return bool(
         settings.KEYCLOAK_PROVISIONING_ENABLED
         and realm.url
@@ -287,11 +326,43 @@ def _find_client(client_id: str) -> dict[str, Any] | None:
     return next((row for row in rows if row.get("clientId") == client_id), None)
 
 
+#: Namespace of the client scopes the sandbox gives app clients (GATEWAY_SCOPES): only
+#: default client scopes with this prefix are ever added to or removed from an app client.
+SCOPE_PREFIX = "oan:"
+#: The protocol mapper adding GATEWAY_TOKEN_AUDIENCE to an app client's tokens.
+AUDIENCE_MAPPER = "oan-audience"
+#: Mapper types the sandbox writes on app clients (others on them are left alone).
+_MANAGED_MAPPERS = ("oidc-hardcoded-claim-mapper", "oidc-audience-mapper")
+
+
 def upsert_app_client(
-    client_id: str, secret: str, app_uid: str, description: str, claims: dict[str, Any]
+    client_id: str,
+    secret: str,
+    app_uid: str,
+    description: str,
+    claims: dict[str, Any],
+    scopes: list[str] | None = None,
+    audience: str = "",
+    jwks: dict[str, Any] | None = None,
 ) -> None:
-    """One app key as an OAuth confidential client (client credentials only) whose access
-    tokens carry ``claims`` (hard-coded claim mappers: strings, or lists as JSON)."""
+    """One app key as an OAuth confidential client (client credentials only).
+
+    Its access tokens carry ``claims`` (hard-coded claim mappers: strings, or lists as
+    JSON), ``scopes`` in the standard ``scope`` claim (default client scopes named
+    ``oan:...``, created in the realm when missing), and ``audience`` in ``aud``.
+    ``jwks`` set: the client authenticates with ``private_key_jwt`` (RFC 7523) against
+    those public keys instead of the secret. Mappers and ``oan:`` scopes the call does
+    not ask for are removed, so a claim switched off (e.g. oan_routes) leaves the token.
+    """
+    attributes: dict[str, str] = {"access.token.lifespan": "300", APP_CLIENT_ATTRIBUTE: app_uid}
+    if jwks:
+        attributes.update({
+            "use.jwks.string": "true",
+            "jwks.string": json.dumps(jwks, separators=(",", ":")),
+            "use.jwks.url": "false",
+        })
+    else:
+        attributes.update({"use.jwks.string": "false", "jwks.string": ""})
     body = {
         "clientId": client_id,
         "name": description[:255],
@@ -299,7 +370,7 @@ def upsert_app_client(
         "enabled": True,
         "protocol": "openid-connect",
         "publicClient": False,
-        "clientAuthenticatorType": "client-secret",
+        "clientAuthenticatorType": "client-jwt" if jwks else "client-secret",
         "secret": secret,
         "serviceAccountsEnabled": True,
         "standardFlowEnabled": False,
@@ -310,7 +381,7 @@ def upsert_app_client(
         "webOrigins": [],
         # Only the claims below: no realm or other clients' roles in its tokens.
         "fullScopeAllowed": False,
-        "attributes": {"access.token.lifespan": "300", APP_CLIENT_ATTRIBUTE: app_uid},
+        "attributes": attributes,
     }
     found = _find_client(client_id)
     if found is None:
@@ -325,10 +396,15 @@ def upsert_app_client(
                                                       "attributes": {**(found.get("attributes") or {}),
                                                                      **body["attributes"]}})
     uuid = found["id"]
-    existing = {m["name"]: m for m in _call("GET", f"/clients/{uuid}/protocol-mappers/models") or []}
+    _set_mappers(uuid, _claim_mappers(claims, audience))
+    _set_client_scopes(uuid, sorted(set(scopes or [])))
+
+
+def _claim_mappers(claims: dict[str, Any], audience: str) -> list[dict[str, Any]]:
+    mappers = []
     for name, value in claims.items():
         is_list = isinstance(value, list | tuple)
-        mapper = {
+        mappers.append({
             "name": name,
             "protocol": "openid-connect",
             "protocolMapper": "oidc-hardcoded-claim-mapper",
@@ -341,14 +417,76 @@ def upsert_app_client(
                 "userinfo.token.claim": "false",
                 "introspection.token.claim": "true",
             },
-        }
-        if name in existing:
-            current = existing[name]
-            if current.get("config") != mapper["config"]:
-                _call("PUT", f"/clients/{uuid}/protocol-mappers/models/{current['id']}",
-                      json={**mapper, "id": current["id"]})
-        else:
+        })
+    if audience:
+        mappers.append({
+            "name": AUDIENCE_MAPPER,
+            "protocol": "openid-connect",
+            "protocolMapper": "oidc-audience-mapper",
+            "config": {
+                "included.custom.audience": audience,
+                "access.token.claim": "true",
+                "id.token.claim": "false",
+                "introspection.token.claim": "true",
+            },
+        })
+    return mappers
+
+
+def _set_mappers(uuid: str, wanted: list[dict[str, Any]]) -> None:
+    """Make the client's sandbox mappers exactly ``wanted``."""
+    existing = {m["name"]: m for m in _call("GET", f"/clients/{uuid}/protocol-mappers/models") or []}
+    names = {m["name"] for m in wanted}
+    for mapper in wanted:
+        current = existing.get(mapper["name"])
+        if current is None:
             _call("POST", f"/clients/{uuid}/protocol-mappers/models", json=mapper)
+        elif current.get("config") != mapper["config"] or current.get("protocolMapper") != mapper["protocolMapper"]:
+            _call("PUT", f"/clients/{uuid}/protocol-mappers/models/{current['id']}",
+                  json={**mapper, "id": current["id"]})
+    for name, current in existing.items():
+        if name not in names and current.get("protocolMapper") in _MANAGED_MAPPERS:
+            _call("DELETE", f"/clients/{uuid}/protocol-mappers/models/{current['id']}", missing_ok=True)
+
+
+def _client_scope_ids(names: list[str]) -> dict[str, str]:
+    """Realm client scope ids by name; ``oan:`` scopes in ``names`` are created when missing
+    (OpenID Connect, shown in the token's ``scope`` claim, no consent screen)."""
+    rows = {row["name"]: row["id"] for row in _call("GET", "/client-scopes") or []}
+    missing = [n for n in names if n not in rows]
+    for name in missing:
+        if not name.startswith(SCOPE_PREFIX):
+            raise ValidationError(f"Scope '{name}' is outside the sandbox's '{SCOPE_PREFIX}' namespace.")
+        _call("POST", "/client-scopes", json={
+            "name": name,
+            "description": f"OAN partner API scope {name} (managed by the OAN sandbox)",
+            "protocol": "openid-connect",
+            "attributes": {
+                "include.in.token.scope": "true",
+                "display.on.consent.screen": "false",
+            },
+        })
+    if missing:
+        rows = {row["name"]: row["id"] for row in _call("GET", "/client-scopes") or []}
+        absent = [n for n in missing if n not in rows]
+        if absent:
+            raise UpstreamError(f"Keycloak did not create client scope(s) {', '.join(absent)}.")
+    return rows
+
+
+def _set_client_scopes(uuid: str, names: list[str]) -> None:
+    """The client's ``oan:`` default client scopes become exactly ``names``; the realm's
+    other scopes on it are not touched."""
+    current = {row["name"]: row["id"] for row in _call("GET", f"/clients/{uuid}/default-client-scopes") or []}
+    stale = [n for n in current if n.startswith(SCOPE_PREFIX) and n not in names]
+    for name in stale:
+        _call("DELETE", f"/clients/{uuid}/default-client-scopes/{current[name]}", missing_ok=True)
+    wanted = [n for n in names if n not in current]
+    if not wanted:
+        return
+    ids = _client_scope_ids(wanted)
+    for name in wanted:
+        _call("PUT", f"/clients/{uuid}/default-client-scopes/{ids[name]}")
 
 
 def delete_app_client(client_id: str) -> None:
@@ -405,7 +543,10 @@ def _client_role(client: str, client_id: str, name: str) -> dict[str, Any]:
 def _admin_token() -> str:
     realm = current_realm()
     cached = _tokens.setdefault((realm.url, realm.name, realm.admin_client_id), {"value": None, "expires_at": 0.0})
-    prefix = "KEYCLOAK_PROD_ADMIN_CLIENT" if realm.url_setting == "KEYCLOAK_PROD_URL" else "KEYCLOAK_ADMIN_CLIENT"
+    prefix = {
+        "KEYCLOAK_PROD_URL": "KEYCLOAK_PROD_ADMIN_CLIENT",
+        "KEYCLOAK_APPS_REALM": "KEYCLOAK_APPS_ADMIN_CLIENT",
+    }.get(realm.url_setting, "KEYCLOAK_ADMIN_CLIENT")
     with _token_lock:
         if cached["value"] and time.monotonic() < cached["expires_at"]:
             return cached["value"]

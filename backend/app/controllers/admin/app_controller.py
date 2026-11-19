@@ -49,6 +49,16 @@ def endpoint_options(admin: ManageProducts, db: DbSession):
     return ok("Endpoints loaded.", api_product_service.endpoint_options(db))
 
 
+@router.get("/api-products/pm-catalogue")
+def pm_catalogue(admin: ManageProducts, environment: str = "UAT"):
+    """Partner Management's policy choices (registries' scopes, use cases ...) for the
+    API product form; ``enabled`` false when PM is not configured."""
+    from app.services import pm_policy_service
+
+    env = "PRODUCTION" if environment.upper() == "PRODUCTION" else "UAT"
+    return ok("Partner Management catalogue.", pm_policy_service.catalogue(env))
+
+
 @router.get("/api-products/{api_product_id}")
 def get_api_product(api_product_id: int, admin: ManageProducts, db: DbSession):
     return ok("API product loaded.", api_product_service.get_product(db, api_product_id).model_dump())
@@ -147,6 +157,13 @@ def revoke_app(app_id: int, payload: AppRevokeRequest, admin: ManageApps, db: Db
 @router.post("/apps/{app_id}/restore")
 def restore_app(app_id: int, admin: ManageApps, db: DbSession):
     return ok("App restored.", app_service.restore_app(db, admin, app_id).model_dump())
+
+
+@router.post("/apps/gateway-sync-all")
+def resync_all_apps(admin: ManageApps, db: DbSession):
+    """Re-write every active app (after a change of scopes, audience or client auth)."""
+    result = app_service.resync_all(db, admin)
+    return ok(f"Re-synced {result['synced']} of {result['apps']} app(s).", result)
 
 
 @router.post("/apps/{app_id}/gateway-sync")

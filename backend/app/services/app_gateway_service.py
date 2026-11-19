@@ -21,11 +21,19 @@ granted endpoints the gateway does not serve, are recorded in
 everybody and need no grant.
 
 With GATEWAY_PARTNER_AUTH=oauth nothing is written to the gateway: the routes
-check the app's Keycloak token, so the sandbox only reads the routes (a viewer
-admin key is enough) and puts the granted route ids in the token's
-``oan_routes``; each active key is a Keycloak client instead. The per-app
-consumer plugins above (IP whitelist, per-product limits, http-logger) do not
-apply then; the routes limit calls per app themselves.
+check the app's Keycloak token; each active key is a Keycloak client instead.
+With GATEWAY_SCOPES the token carries the scopes of the app's products in the
+standard ``scope`` claim (``gateway_scope_service``), plus GATEWAY_TOKEN_AUDIENCE
+in ``aud``, and the routes check those: the sandbox needs nothing from the
+gateway. While GATEWAY_LEGACY_ROUTE_CLAIM is on (or without GATEWAY_SCOPES) the
+token also carries the granted route ids in ``oan_routes``, which the sandbox
+reads from the routes (a viewer admin key is enough). What the
+consumer plugins above did, the routes do from the token: the app's IP
+whitelist (``oan_ips``) and the limits of its products (``oan_limit_minute``,
+``oan_limit_day``, with GATEWAY_RATE_LIMIT_ENABLED), and they carry
+``http-logger`` themselves (``gateway_log_service``). A change reaches the
+gateway with the next token: one already issued keeps its values until it
+expires (five minutes).
 
 Every app belongs to one environment (``ParticipantApp.environment``) and has
 its own keys there: a UAT app works only on UAT, a production app (made with
@@ -35,12 +43,19 @@ GATEWAY_PROD_ADMIN_URL are set, else the main ones - and its tokens name only
 that environment (``oan_environments``). A production app's keys work only while
 its owner is approved for production.
 
+Route ids are resolved from the routes the last "Pull from gateway" kept
+(``GatewayRouteSnapshot``, ``routes_for``); only a gateway never pulled is read
+live. So with GATEWAY_PARTNER_AUTH=oauth, once pulled, approving an app or
+changing a product needs Keycloak but not the gateway. A pull re-syncs the apps
+whose route ids changed (``resync_after_pull``).
+
 ``sync_app`` is idempotent and never raises: a gateway failure is stored on
 the app (``gateway_status`` FAILED, ``gateway_error``) and can be retried.
 """
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Iterable
 from datetime import UTC, datetime
 
@@ -49,10 +64,14 @@ from sqlalchemy.orm import Session
 
 from app.config.settings import settings
 from app.core import crypto
-from app.core.exceptions import AppError
+from app.core.exceptions import AppError, ValidationError
 from app.core.logging import get_logger
 from app.integrations import gateway, keycloak
-from app.models.app import ParticipantApp, ParticipantAppCredential
+from app.models.app import (
+    GatewayRouteSnapshot,
+    ParticipantApp,
+    ParticipantAppCredential,
+)
 from app.models.catalog import Endpoint, Product
 from app.models.enums import (
     AppStatus,
@@ -63,6 +82,7 @@ from app.models.enums import (
 )
 from app.models.participant import Participant
 from app.repositories.app_repository import ApiProductRepository
+from app.services import gateway_scope_service, pm_policy_service
 
 logger = get_logger(__name__)
 
@@ -114,10 +134,25 @@ def credential_ids(credential: ParticipantAppCredential) -> tuple[str, str]:
 
 
 def sync_app(
-    db: Session, app: ParticipantApp, routes: list[gateway.GatewayRoute] | None = None
+    db: Session,
+    app: ParticipantApp,
+    routes: list[gateway.GatewayRoute] | None = None,
+    policies: bool = True,
 ) -> ParticipantApp:
     """Bring the gateway in line with ``app``; ``routes`` (of the app's environment's
-    gateway) save a fetch when syncing many."""
+    gateway) save a fetch when syncing many. ``policies``: then reconcile the owner's
+    Partner Management policies (``pm_policy_service``; ``sync_apps`` does it once per
+    owner)."""
+    try:
+        return _sync_app(db, app, routes)
+    finally:
+        if policies:
+            pm_policy_service.sync_participant(db, app.participant_id)
+
+
+def _sync_app(
+    db: Session, app: ParticipantApp, routes: list[gateway.GatewayRoute] | None = None
+) -> ParticipantApp:
     if not gateway.app_sync_configured():
         app.gateway_status = str(GatewaySyncStatus.DISABLED)
         app.gateway_error = None
@@ -133,18 +168,28 @@ def sync_app(
                     _sync_oauth_clients(app, None)
                 elif app.gateway_consumer:
                     gateway.delete_consumer(app.gateway_consumer)
-                app.gateway_routes, app.gateway_warnings = [], []
+                app.gateway_routes, app.gateway_warnings, app.gateway_scopes = [], [], []
             elif oauth_clients():
-                # The routes check the token, not a consumer: only read the routes (their ids
-                # go into the token's oan_routes), never write to the gateway.
-                app.gateway_routes, app.gateway_warnings = resolve_routes(
-                    db, app, gateway.list_routes() if routes is None else routes
-                )
+                # The routes check the token, not a consumer: never write to the gateway.
+                # Scopes come from configuration; route ids (legacy) from the routes.
+                warnings: list[str] = []
+                if gateway_scope_service.enabled():
+                    app.gateway_scopes, warnings = gateway_scope_service.app_scopes(db, app)
+                else:
+                    app.gateway_scopes = []
+                if needs_routes():
+                    app.gateway_routes, route_warnings = resolve_routes(
+                        db, app, routes_for(db, app.environment) if routes is None else routes
+                    )
+                    if not gateway_scope_service.enabled():
+                        warnings = route_warnings
+                else:
+                    app.gateway_routes = []
+                app.gateway_warnings = warnings
                 _sync_oauth_clients(app, owner)
             else:
-                _write_consumer(db, app, gateway.list_routes() if routes is None else routes)
-        if is_production(app):
-            _forget_on_main(app)
+                _write_consumer(db, app, routes_for(db, app.environment) if routes is None else routes)
+        _forget_elsewhere(app)
         app.gateway_status = str(GatewaySyncStatus.SYNCED)
         app.gateway_error = None
         app.gateway_synced_at = datetime.now(UTC)
@@ -161,6 +206,32 @@ def oauth_clients() -> bool:
     return settings.GATEWAY_PARTNER_AUTH == "oauth"
 
 
+def needs_routes() -> bool:
+    """Whether app sync needs the gateway's routes: the key modes (consumer whitelists)
+    and oauth tokens that still carry route ids. Scopes alone need none."""
+    if not oauth_clients():
+        return True
+    return not gateway_scope_service.enabled() or settings.GATEWAY_LEGACY_ROUTE_CLAIM
+
+
+def _production_jwks(app: ParticipantApp, owner: Participant) -> dict | None:
+    """The JWKS a production app client checks client assertions with
+    (KEYCLOAK_PROD_CLIENT_AUTH=private-key-jwt): the owner's registered signing key.
+    None = the client uses its secret."""
+    if not is_production(app) or settings.KEYCLOAK_PROD_CLIENT_AUTH != "private-key-jwt":
+        return None
+    from app.services.partner_portal_service import public_jwk
+
+    key = public_jwk(owner.public_key) if owner.public_key else None
+    if key is None:
+        raise ValidationError(
+            "Production app keys use private_key_jwt (KEYCLOAK_PROD_CLIENT_AUTH), but the partner has no "
+            "usable signing key (RSA >= 2048, EC P-256/P-384 or Ed25519). Ask them to send it with the "
+            "production request."
+        )
+    return {"keys": [key]}
+
+
 def is_production(app: ParticipantApp) -> bool:
     return str(app.environment).upper() == str(Environment.PRODUCTION)
 
@@ -170,6 +241,9 @@ def _sync_oauth_clients(app: ParticipantApp, owner: Participant | None) -> None:
     secret) in the app's environment's realm; its token names the owner, the app, the
     app's environment and the routes of the app's products (the same list as the
     consumer's whitelist). ``owner`` None: every client of the app goes."""
+    # What a consumer held in the app-key modes travels in the token: the routes read it.
+    per_minute, per_day = effective_limits(app) if settings.GATEWAY_RATE_LIMIT_ENABLED else (None, None)
+    jwks = _production_jwks(app, owner) if owner is not None else None
     for credential in app.credentials:
         api_key = crypto.decrypt(credential.api_key_encrypted)
         if owner is None or not credential_is_live(credential):
@@ -184,23 +258,41 @@ def _sync_oauth_clients(app: ParticipantApp, owner: Participant | None) -> None:
                 "participant_uid": str(owner.unique_id),
                 "oan_app": str(app.unique_id),
                 "oan_environments": [str(app.environment).lower()],
-                "oan_routes": list(app.gateway_routes or []),
+                # Route ids only while the gateway may still check them (legacy).
+                **({"oan_routes": list(app.gateway_routes or [])} if needs_routes() else {}),
+                # Always written, so a cleared whitelist or limit also clears the claim:
+                # an empty list = any address, "0" = no limit of its own.
+                "oan_ips": list(app.allowed_ips or []),
+                "oan_limit_minute": str(per_minute or 0),
+                "oan_limit_day": str(per_day or 0),
             },
+            scopes=list(app.gateway_scopes or []),
+            audience=settings.GATEWAY_TOKEN_AUDIENCE,
+            jwks=jwks,
         )
 
 
-def _forget_on_main(app: ParticipantApp) -> None:
-    """A production app lives only on production's own Keycloak / gateway once they are
-    configured: copies left on the main ones (written before) are removed. Best effort."""
-    try:
-        if oauth_clients() and keycloak.separate_production():
-            with keycloak.use_realm(keycloak.main_realm()):
-                _sync_oauth_clients(app, None)
-        elif not oauth_clients() and gateway.separate_production() and app.gateway_consumer:
+def _forget_elsewhere(app: ParticipantApp) -> None:
+    """An app's clients live only in its own realm (``keycloak.realm_for``): copies left in
+    another one - written before KEYCLOAK_APPS_REALM or production's own Keycloak were set
+    - are removed. In the key modes a production app's consumer leaves the main gateway
+    once production has its own. Best effort."""
+    if oauth_clients():
+        home = keycloak.realm_for(app.environment)
+        for realm in keycloak.app_realms():
+            if keycloak.same_realm(realm, home):
+                continue
+            try:
+                with keycloak.use_realm(realm):
+                    _sync_oauth_clients(app, None)
+            except AppError as exc:
+                logger.warning("Old copy of app %s in realm %s not removed: %s", app.app_id, realm.name, exc.message)
+    elif is_production(app) and gateway.separate_production() and app.gateway_consumer:
+        try:
             with gateway.use_target(gateway.main_target()):
                 gateway.delete_consumer(app.gateway_consumer)
-    except AppError as exc:
-        logger.warning("Old copy of production app %s not removed: %s", app.app_id, exc.message)
+        except AppError as exc:
+            logger.warning("Old copy of production app %s not removed: %s", app.app_id, exc.message)
 
 
 def owner_active(participant: Participant | None, environment: str = str(Environment.UAT)) -> bool:
@@ -243,9 +335,22 @@ def sync_apps(db: Session, apps: Iterable[ParticipantApp]) -> None:
     apps = list(apps)
     if not apps:
         return
+    try:
+        _sync_apps(db, apps)
+    finally:
+        for participant_id in sorted({app.participant_id for app in apps}):
+            pm_policy_service.sync_participant(db, participant_id)
+
+
+def _sync_apps(db: Session, apps: list[ParticipantApp]) -> None:
     if not gateway.app_sync_configured():
         for app in apps:
-            sync_app(db, app)
+            sync_app(db, app, policies=False)
+        return
+    if not needs_routes():
+        # Scopes only: nothing to read from any gateway.
+        for app in apps:
+            sync_app(db, app, [], policies=False)
         return
     # The routes of each gateway, read once; an unreachable one fails its apps only.
     routes: dict[gateway.AdminTarget, list[gateway.GatewayRoute] | AppError] = {}
@@ -253,8 +358,7 @@ def sync_apps(db: Session, apps: Iterable[ParticipantApp]) -> None:
         target = gateway.target_for(app.environment)
         if target not in routes:
             try:
-                with gateway.use_target(target):
-                    routes[target] = gateway.list_routes()
+                routes[target] = routes_for(db, app.environment)
             except AppError as exc:
                 routes[target] = exc
         found = routes[target]
@@ -262,7 +366,83 @@ def sync_apps(db: Session, apps: Iterable[ParticipantApp]) -> None:
             app.gateway_status, app.gateway_error = str(GatewaySyncStatus.FAILED), found.message
             db.commit()
             continue
-        sync_app(db, app, found)
+        sync_app(db, app, found, policies=False)
+
+
+# ------------------------------------------------------- routes of the last pull
+_ROUTE_FIELDS = {f.name for f in dataclasses.fields(gateway.GatewayRoute)}
+
+
+def save_routes(
+    db: Session, environment: str, gateway_type: str, routes: list[gateway.GatewayRoute], pulled_by: str
+) -> None:
+    """Keep the routes a pull read from the gateway ``environment`` ("UAT" / "PRODUCTION")."""
+    row = db.get(GatewayRouteSnapshot, environment) or GatewayRouteSnapshot(environment=environment)
+    row.gateway_type = gateway_type
+    row.routes = [dataclasses.asdict(route) for route in routes]
+    row.pulled_date = datetime.now(UTC)
+    row.pulled_by = pulled_by[:200]
+    db.add(row)
+    db.commit()
+
+
+def stored_routes(db: Session, environment: str) -> list[gateway.GatewayRoute] | None:
+    """The routes of the last pull of that gateway; None when it was never pulled."""
+    row = db.get(GatewayRouteSnapshot, environment)
+    if row is None:
+        return None
+    return [
+        gateway.GatewayRoute(**{k: v for k, v in item.items() if k in _ROUTE_FIELDS})
+        for item in row.routes or []
+    ]
+
+
+def last_pull(db: Session, environment: str) -> datetime | None:
+    row = db.get(GatewayRouteSnapshot, environment)
+    if row is None or row.pulled_date is None:
+        return None
+    pulled = row.pulled_date
+    return pulled.replace(tzinfo=UTC) if pulled.tzinfo is None else pulled
+
+
+def routes_for(db: Session, environment: str) -> list[gateway.GatewayRoute]:
+    """The routes of the gateway serving an app of ``environment``: the last pull's copy,
+    else (never pulled) read from its Admin API."""
+    target = gateway.target_for(environment)
+    stored = stored_routes(db, target.environment)
+    if stored is not None:
+        return stored
+    with gateway.use_target(target):
+        return gateway.list_routes()
+
+
+def resync_after_pull(db: Session, environment: str) -> int:
+    """Re-sync the active apps on gateway ``environment`` whose route ids (or warnings)
+    differ from what the pulled routes give, e.g. a renamed route with a new id.
+    Returns how many were re-synced."""
+    if not gateway.app_sync_configured() or not needs_routes():
+        return 0
+    routes = stored_routes(db, environment)
+    if routes is None:
+        return 0
+    apps = db.execute(
+        select(ParticipantApp).where(
+            ParticipantApp.is_deleted.is_(False),
+            ParticipantApp.status == int(AppStatus.ACTIVE),
+        )
+    ).scalars().all()
+    changed = 0
+    for app in apps:
+        if gateway.target_for(app.environment).environment != environment:
+            continue
+        if not owner_active(db.get(Participant, app.participant_id), app.environment):
+            continue
+        route_ids, warnings = resolve_routes(db, app, routes)
+        if route_ids == sorted(app.gateway_routes or []) and warnings == list(app.gateway_warnings or []):
+            continue
+        sync_app(db, app, routes, policies=False)
+        changed += 1
+    return changed
 
 
 def _write_consumer(db: Session, app: ParticipantApp, routes: list[gateway.GatewayRoute]) -> None:

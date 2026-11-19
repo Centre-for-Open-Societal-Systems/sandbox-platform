@@ -26,6 +26,7 @@ import {
   limitText,
   parseIpList,
 } from "@/components/apps/app-ui";
+import { PmPolicyList } from "@/components/apps/pm-policy-list";
 import { PageBanner } from "@/components/layout/page-banner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -114,6 +115,8 @@ export default function MyAppsPage() {
           </Button>
         )}
       </div>
+
+      <DataAccess environment={environment} />
 
       {appsQuery.isLoading ? (
         <p className="mt-10 flex items-center justify-center gap-2 text-sm text-subtle">
@@ -1053,5 +1056,21 @@ function RequestProductsDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** The data the partner's API products let it request, as filed in Partner Management. */
+function DataAccess({ environment }: { environment: string }) {
+  const query = useQuery({ queryKey: ["participant", "data-access"], queryFn: () => appsApi.dataAccess() });
+  const policies = (query.data?.policies ?? []).filter((p) => p.environment === environment);
+  if (!policies.length) return null;
+  return (
+    <section className="mt-6 rounded-2xl border border-hairline bg-white p-4">
+      <h2 className="text-sm font-semibold text-nav-active">Data access (Partner Management)</h2>
+      <p className="mt-1 text-xs text-subtle">
+        What your API products let you request from registries. Partner Management&apos;s staff approve each request.
+      </p>
+      <PmPolicyList policies={policies} />
+    </section>
   );
 }

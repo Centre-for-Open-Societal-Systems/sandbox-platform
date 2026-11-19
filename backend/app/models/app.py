@@ -85,6 +85,9 @@ class ApiProduct(Base, UniqueIdMixin, AuditMixin, SoftDeleteMixin):
     #: gateway (GATEWAY_RATE_LIMIT_ENABLED); empty = no limit.
     rate_limit_per_minute: Mapped[int | None] = mapped_column(Integer)
     quota_per_day: Mapped[int | None] = mapped_column(Integer)
+    #: OpenG2P Partner Management access policy (PM PolicyInput, ``schemas.app.PmPolicy``)
+    #: apps with this product ask for; empty = none.
+    pm_policy: Mapped[dict | None] = mapped_column(JSONB)
 
     endpoints: Mapped[list[ApiProductEndpoint]] = relationship(
         back_populates="api_product", cascade="all, delete-orphan"
@@ -159,6 +162,8 @@ class ParticipantApp(Base, UniqueIdMixin, AuditMixin, SoftDeleteMixin):
     #: outside the app's products).
     gateway_routes: Mapped[list | None] = mapped_column(JSONB, default=list)
     gateway_warnings: Mapped[list | None] = mapped_column(JSONB, default=list)
+    #: OAuth scopes the app's token carries (GATEWAY_SCOPES): those of its approved products.
+    gateway_scopes: Mapped[list | None] = mapped_column(JSONB, default=list)
 
     subscriptions: Mapped[list[ParticipantAppProduct]] = relationship(
         back_populates="app", cascade="all, delete-orphan"
@@ -235,6 +240,11 @@ class ParticipantIamUser(Base, AuditMixin):
     pm_status: Mapped[str | None] = mapped_column(String(10))
     pm_error: Mapped[str | None] = mapped_column(Text)
     pm_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The same partner in production's own PM (PM_PROD_*): ACTIVE / DISABLED / PENDING /
+    #: FAILED; empty: never sent there.
+    pm_prod_status: Mapped[str | None] = mapped_column(String(10))
+    pm_prod_error: Mapped[str | None] = mapped_column(Text)
+    pm_prod_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ParticipantAppCredential(Base, UniqueIdMixin, AuditMixin):
@@ -269,3 +279,61 @@ class ParticipantAppCredential(Base, UniqueIdMixin, AuditMixin):
     expiry_notified_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     app: Mapped[ParticipantApp] = relationship(back_populates="credentials")
+
+
+class GatewayRouteSnapshot(Base):
+    """The routes of one gateway as the last "Pull from gateway" read them.
+
+    One row per gateway (``AdminTarget.environment``: "UAT", or "PRODUCTION" when
+    production runs its own APISIX). App sync resolves an app's route ids from this
+    copy, so approving an app or changing a product needs nothing from the gateway's
+    Admin API once it has been pulled (``app_gateway_service.routes_for``).
+    """
+
+    __tablename__ = "gateway_route_snapshot"
+
+    environment: Mapped[str] = mapped_column(String(16), primary_key=True)
+    gateway_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: ``gateway.GatewayRoute`` as dicts: id, name, service_key, paths, methods, ...
+    routes: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    pulled_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    #: Who pulled: an administrator's name, or "automatic" (GATEWAY_AUTO_PULL_HOURS).
+    pulled_by: Mapped[str | None] = mapped_column(String(200))
+
+
+class ParticipantPmPolicy(Base):
+    """One Partner Management policy the sandbox asked for on a participant's behalf.
+
+    One row per (participant, PM, policy key): the merged policy of the participant's
+    approved API products that carry it (``ApiProduct.pm_policy``), what the sandbox last
+    filed and where that stands. ``environment`` is the PM: "UAT" (PM_*) or "PRODUCTION"
+    (production's own, PM_PROD_*). ``policy_key``: ``data_controller:<id>`` or
+    ``use_case:<name@major>``. Status (``PmPolicyStatus``): WAITING (the PM partner is not
+    active yet), PENDING (request filed, PM staff to decide), ACTIVE, REJECTED (by PM
+    staff; filed again only when the products ask for something else), REVOKING (revoke
+    filed), FAILED (PM could not be reached; retried). Policies PM staff made themselves
+    are never in this table and never touched.
+    """
+
+    __tablename__ = "participant_pm_policy"
+    __table_args__ = (
+        UniqueConstraint("participant_id", "environment", "backend", "policy_key", name="uq_participant_pm_policy"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    participant_id: Mapped[int] = mapped_column(
+        ForeignKey("participant.participant_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    environment: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: Where it was filed: "pm" (Partner Management) or "cm" (COSS Consent Manager).
+    backend: Mapped[str] = mapped_column(String(8), nullable=False, default="pm")
+    policy_key: Mapped[str] = mapped_column(String(300), nullable=False)
+    #: The policy as filed (PolicyInput); empty while WAITING / before the first request.
+    policy: Mapped[dict | None] = mapped_column(JSONB)
+    status: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
+    #: The open (or last) PM request.
+    request_id: Mapped[str | None] = mapped_column(String(64))
+    #: Display names of the API products asking for it.
+    products: Mapped[list | None] = mapped_column(JSONB, default=list)
+    error: Mapped[str | None] = mapped_column(Text)
+    synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

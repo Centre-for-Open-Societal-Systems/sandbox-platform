@@ -12,7 +12,14 @@ end-points already flagged "served through the API gateway":
 * gateway end-points the gateway no longer serves are reported, not deleted.
 
 ``dry_run`` computes the same report and rolls everything back, so the console
-can show what a pull would change before it is applied. ``environment``
+can show what a pull would change before it is applied.
+
+A real pull also keeps the routes it read (``GatewayRouteSnapshot``, one per
+gateway) and re-syncs the active apps whose granted route ids changed, e.g.
+because a route was renamed and got a new id. App sync then resolves route ids
+from that copy, so after a pull the sandbox needs nothing from the Admin API to
+approve apps or change products. ``auto_pull`` runs the same pull without an
+administrator every GATEWAY_AUTO_PULL_HOURS (``main``). ``environment``
 PRODUCTION reads production's own gateway (GATEWAY_PROD_ADMIN_URL) when it has
 one; the catalogue is shared, so its routes match the same end-points.
 """
@@ -20,19 +27,29 @@ one; the catalogue is shared, so its routes match the same end-points.
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
 from app.config.settings import settings
 from app.core.deps import AdminPrincipal
+from app.core.exceptions import AppError
+from app.core.logging import get_logger
 from app.integrations import gateway
 from app.models.catalog import Endpoint, Product
 from app.models.enums import Environment
 from app.repositories.catalog_repository import ProductRepository
-from app.services import audit_service
+from app.services import app_gateway_service, audit_service
 from app.services.audit_service import Action
+
+logger = get_logger(__name__)
+
+#: Shown as the author of an automatic pull.
+AUTOMATIC = "automatic"
+#: pg_try_advisory_lock key: one automatic pull at a time across API replicas.
+_AUTO_PULL_LOCK = 7_340_211_801
 
 #: Rows listed per section of the report; the counts are always complete.
 REPORT_LIMIT = 200
@@ -52,9 +69,14 @@ def status() -> dict[str, Any]:
 
 
 def sync(
-    db: Session, admin: AdminPrincipal, dry_run: bool = False, environment: Environment = Environment.UAT
+    db: Session,
+    admin: AdminPrincipal | None,
+    dry_run: bool = False,
+    environment: Environment = Environment.UAT,
 ) -> dict[str, Any]:
-    with gateway.use_target(gateway.target_for(environment)):
+    """Pull one gateway into the catalogue. ``admin`` None: an automatic pull."""
+    target = gateway.target_for(environment)
+    with gateway.use_target(target):
         snapshot = gateway.fetch()
     services = {service.key: service for service in snapshot.services}
 
@@ -71,6 +93,7 @@ def sync(
         "unchanged": 0,
         "skipped": [],
         "missing": [],
+        "apps_resynced": 0,
     }
 
     existing = _gateway_endpoints(db)
@@ -147,19 +170,25 @@ def sync(
                 row["product_id"] = None
     else:
         db.commit()
-        audit_service.record_admin(
-            db,
-            admin,
-            Action.GATEWAY_SYNC,
-            entity="product",
-            description=(
-                f"Pulled from {snapshot.gateway_type}"
-                f"{' (production gateway)' if environment == Environment.PRODUCTION else ''}: "
-                f"{len(report['created'])} created, "
-                f"{len(report['updated'])} updated, {report['unchanged']} unchanged, "
-                f"{len(report['missing'])} not on the gateway"
-            ),
+        app_gateway_service.save_routes(
+            db, target.environment, snapshot.gateway_type, snapshot.routes, _actor_name(admin)
         )
+        report["apps_resynced"] = app_gateway_service.resync_after_pull(db, target.environment)
+        description = (
+            f"{'Automatic pull' if admin is None else 'Pulled'} from {snapshot.gateway_type}"
+            f"{' (production gateway)' if environment == Environment.PRODUCTION else ''}: "
+            f"{len(report['created'])} created, "
+            f"{len(report['updated'])} updated, {report['unchanged']} unchanged, "
+            f"{len(report['missing'])} not on the gateway, "
+            f"{report['apps_resynced']} app(s) re-synced"
+        )
+        if admin is None:
+            audit_service.record(
+                db, Action.GATEWAY_SYNC, actor_name=AUTOMATIC, entity="product",
+                description=description, country_code=settings.DEFAULT_COUNTRY_CODE,
+            )
+        else:
+            audit_service.record_admin(db, admin, Action.GATEWAY_SYNC, entity="product", description=description)
 
     for section in ("created", "updated", "skipped", "missing"):
         report[f"{section}_count"] = len(report[section])
@@ -167,8 +196,58 @@ def sync(
     return report
 
 
+def auto_pull(db: Session) -> list[dict[str, Any]]:
+    """Pull every gateway the console can pull from, without an administrator.
+
+    Skipped when pulling is off, or when another replica holds the lock or pulled
+    less than GATEWAY_AUTO_PULL_HOURS ago (so restarts and several pods pull once).
+    One gateway failing does not stop the others; returns one summary per gateway.
+    """
+    if not settings.GATEWAY_SYNC_ENABLED or settings.GATEWAY_AUTO_PULL_HOURS <= 0:
+        return []
+    postgres = db.get_bind().dialect.name == "postgresql"
+    if postgres and not db.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": _AUTO_PULL_LOCK}).scalar():
+        return []
+    try:
+        summaries = []
+        # Pulled a little early still counts, so a pod restarted just before the mark waits.
+        due = timedelta(hours=settings.GATEWAY_AUTO_PULL_HOURS) - timedelta(minutes=5)
+        for name in status()["environments"]:
+            environment = Environment(name)
+            pulled = app_gateway_service.last_pull(db, gateway.target_for(environment).environment)
+            if pulled is not None and datetime.now(UTC) - pulled < due:
+                continue
+            try:
+                report = sync(db, None, environment=environment)
+            except AppError as exc:
+                db.rollback()
+                logger.warning("Automatic pull of the %s gateway failed: %s", name, exc.message)
+                summaries.append({"environment": name, "error": exc.message})
+                continue
+            summaries.append({
+                "environment": name,
+                **{k: report[f"{k}_count"] for k in ("created", "updated", "missing")},
+                "apps_resynced": report["apps_resynced"],
+            })
+        return summaries
+    finally:
+        if postgres:
+            db.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _AUTO_PULL_LOCK})
+            db.commit()
+
+
 # ---------------------------------------------------------------- helpers
 _route_key = gateway.operation_key
+
+
+def _actor_name(admin: AdminPrincipal | None) -> str:
+    if admin is None:
+        return AUTOMATIC
+    return admin.user.full_name or admin.user.login_name or str(admin.id)
+
+
+def _actor_id(admin: AdminPrincipal | None) -> int | None:
+    return admin.id if admin is not None else None
 
 
 def _gateway_endpoints(db: Session) -> list[Endpoint]:
@@ -209,7 +288,7 @@ def _nearest_product(db: Session, placed: list[tuple[str, int]], path: str) -> P
 
 def _create_product(
     db: Session,
-    admin: AdminPrincipal,
+    admin: AdminPrincipal | None,
     service: gateway.GatewayService | None,
     route: gateway.GatewayRoute,
 ) -> Product:
@@ -224,18 +303,18 @@ def _create_product(
         display_name=_title(base),
         description=(service.description if service else None)
         or f"Pulled from the {settings.GATEWAY_TYPE} gateway. Review, then publish.",
-        country_code=admin.country_code,
+        country_code=(admin.country_code if admin is not None else None) or settings.DEFAULT_COUNTRY_CODE,
         is_gateway_published=True,
         is_published=False,
         gateway_product_id=route.service_key or "",
-        added_by=admin.id,
-        modify_by=admin.id,
+        added_by=_actor_id(admin),
+        modify_by=_actor_id(admin),
     )
 
 
 def _create_endpoint(
     db: Session,
-    admin: AdminPrincipal,
+    admin: AdminPrincipal | None,
     product: Product,
     route: gateway.GatewayRoute,
     method: str,
@@ -254,8 +333,8 @@ def _create_endpoint(
         is_gateway_published=True,
         is_published=False,
         api_keywords=[],
-        added_by=admin.id,
-        modify_by=admin.id,
+        added_by=_actor_id(admin),
+        modify_by=_actor_id(admin),
     )
     db.add(endpoint)
     db.flush()
@@ -263,7 +342,7 @@ def _create_endpoint(
 
 
 def _refresh(
-    endpoint: Endpoint, route: gateway.GatewayRoute, path: str, admin: AdminPrincipal
+    endpoint: Endpoint, route: gateway.GatewayRoute, path: str, admin: AdminPrincipal | None
 ) -> list[str]:
     """Fill in what the gateway knows and the end-point lacks; never overwrite."""
     # Matched end-points are already served through the gateway (on themselves
@@ -285,7 +364,7 @@ def _refresh(
         endpoint.header_params = header_params
         changes.append(f"{', '.join(added)} header{'s' if len(added) > 1 else ''}")
     if changes:
-        endpoint.modify_by = admin.id
+        endpoint.modify_by = _actor_id(admin)
     return changes
 
 

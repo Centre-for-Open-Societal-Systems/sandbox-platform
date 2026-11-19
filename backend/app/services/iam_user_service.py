@@ -144,7 +144,20 @@ def sync(
     except AppError as exc:
         logger.warning("Keycloak user for participant %s failed: %s", participant.participant_id, exc.message)
         row.status, row.error = str(IamUserStatus.FAILED), exc.message[:2000]
+    # Saved first: a PM that copies keys (1.0) reads the partner's JWKS from this API while
+    # onboarding, and that answers from the database.
+    db.commit()
     pm_changed = include_pm and partner_portal_service.sync_pm(participant, row, active=enabled)
+    # Production's own PM (PM_PROD_*): the partner exists there only with production access.
+    pm_prod_changed = include_pm and partner_portal_service.sync_pm_production(
+        participant, row, active="production" in roles
+    )
+    if include_pm and (pm_changed or pm_prod_changed):
+        # The PM partner's state changed (e.g. now active): its policies may be filed now.
+        db.commit()
+        from app.services import pm_policy_service
+
+        pm_policy_service.sync_participant(db, participant.participant_id)
     row.synced_at = datetime.now(UTC)
     row.modify_by = actor_id
     db.commit()
@@ -168,6 +181,16 @@ def sync(
             entity_id=row.id,
             description=f"Partner Management partner {row.pm_partner_id}: {row.pm_status}"
             + (f" ({row.pm_error})" if row.pm_error else ""),
+            country_code=participant.country_code,
+        )
+    if pm_prod_changed:
+        audit_service.record(
+            db,
+            Action.PM_PARTNER_FAILED if row.pm_prod_status == str(IamUserStatus.FAILED) else Action.PM_PARTNER_SYNC,
+            entity="participant_iam_user",
+            entity_id=row.id,
+            description=f"Production Partner Management partner {row.pm_partner_id}: {row.pm_prod_status}"
+            + (f" ({row.pm_prod_error})" if row.pm_prod_error else ""),
             country_code=participant.country_code,
         )
     return row

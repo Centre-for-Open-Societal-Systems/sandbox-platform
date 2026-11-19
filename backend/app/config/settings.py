@@ -133,6 +133,10 @@ class Settings(BaseSettings):
     #: above, as before.
     GATEWAY_PROD_ADMIN_URL: str = ""
     GATEWAY_PROD_ADMIN_TOKEN: str = ""
+    #: With GATEWAY_SYNC_ENABLED, pull every gateway on its own this often (hours):
+    #: routes added by the gateway's Helm chart reach the catalogue (unpublished) and
+    #: apps whose route ids changed are re-synced. 0 = only the console's button.
+    GATEWAY_AUTO_PULL_HOURS: int = 24
 
     # ------------------------------------------------- apps and credentials
     # Participants create apps, each with an API key + secret and a set of
@@ -159,6 +163,22 @@ class Settings(BaseSettings):
     #: call). Needs KEYCLOAK_PROVISIONING_ENABLED and GATEWAY_APP_SYNC_ENABLED.
     GATEWAY_PARTNER_AUTH: Literal["apikey", "keycloak", "oauth"] = "apikey"
     GATEWAY_PARTNER_TOKEN_HEADER: str = "X-Partner-Token"
+    #: OAuth scopes of the partner APIs (oauth mode), as the gateway's Helm chart
+    #: requires them: a JSON object of "/gateway-prefix" or "METHOD /gateway/path"
+    #: -> scope (the chart's gateway-scopes.json). An app's token then carries the
+    #: scopes of its approved API products in the standard ``scope`` claim (Keycloak
+    #: client scopes) and the routes check those, not route ids: app access needs
+    #: nothing from the gateway's Admin API. Every scope must start with "oan:".
+    #: Empty = no scopes (the routes check oan_routes, as before).
+    GATEWAY_SCOPES: str = ""
+    #: ``aud`` every app token carries (oauth mode); the partner gateway refuses tokens
+    #: without it, so a token made for another client of the realm is useless there.
+    #: Empty = no audience.
+    GATEWAY_TOKEN_AUDIENCE: str = "oan-partner-gateway"
+    #: Also put the route ids (oan_routes) in app tokens. On while the gateway still
+    #: accepts them (chart legacyRouteIds); off once every route checks scopes, and
+    #: then app sync does not read the gateway at all.
+    GATEWAY_LEGACY_ROUTE_CLAIM: bool = True
     #: Fernet key (``Fernet.generate_key()``) encrypting stored keys/secrets.
     #: Required in production; changing it makes stored credentials unreadable.
     APP_CREDENTIAL_ENCRYPTION_KEY: str = ""
@@ -238,6 +258,24 @@ class Settings(BaseSettings):
     KEYCLOAK_PROD_ADMIN_CLIENT_SECRET: str = ""
     #: Empty = {KEYCLOAK_PROD_URL}/realms/{realm}/protocol/openid-connect/certs.
     KEYCLOAK_PROD_JWKS_URL: str = ""
+    # Sandbox apps' own realm (GATEWAY_PARTNER_AUTH=oauth), e.g. partner-sandbox-app, on
+    # KEYCLOAK_URL: the app keys' OAuth clients, their oan: scopes and tokens live there,
+    # apart from KEYCLOAK_REALM, which keeps the partners' users (portal sign-in, the CM
+    # partner portal). The partner gateway trusts only this realm's issuer. Its own
+    # service account (scripts/keycloak/setup_app_realm.py) holds only client roles.
+    # Empty = app clients stay in KEYCLOAK_REALM, as before. Production apps use it too
+    # unless production has its own Keycloak (KEYCLOAK_PROD_*; its realm defaults to this).
+    KEYCLOAK_APPS_REALM: str = ""
+    #: Empty = KEYCLOAK_ADMIN_CLIENT_ID (a client of that name must then exist in the apps realm).
+    KEYCLOAK_APPS_ADMIN_CLIENT_ID: str = ""
+    #: Empty = KEYCLOAK_ADMIN_CLIENT_SECRET.
+    KEYCLOAK_APPS_ADMIN_CLIENT_SECRET: str = ""
+    #: How production app clients authenticate to Keycloak (oauth mode).
+    #: client-secret: API key + secret, as UAT. private-key-jwt (RFC 7523): a client
+    #: assertion signed with the private key of the partner's registered signing key
+    #: (the production request's certificate / public key, Participant.public_key); the
+    #: secret then opens nothing, and the portal cannot fetch production tokens.
+    KEYCLOAK_PROD_CLIENT_AUTH: Literal["client-secret", "private-key-jwt"] = "client-secret"
 
     @property
     def keycloak_environment_set(self) -> set[str]:
@@ -274,6 +312,33 @@ class Settings(BaseSettings):
         return self.PARTICIPANT_AUTH_PROVIDER == "keycloak"
 
     @property
+    def gateway_scopes(self) -> dict[str, str]:
+        """GATEWAY_SCOPES parsed: {"/prefix" or "METHOD /path": "oan:..."}; {} when empty.
+
+        Scopes outside the "oan:" namespace are refused: the sandbox attaches these
+        Keycloak client scopes to app clients and must never attach a realm's own
+        (profile, roles, an admin scope ...)."""
+        raw = self.GATEWAY_SCOPES.strip()
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"GATEWAY_SCOPES is not valid JSON: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError('GATEWAY_SCOPES must be a JSON object: {"/prefix": "oan:scope", ...}')
+        for key, scope in parsed.items():
+            path = str(key).split(" ", 1)[-1]
+            if not path.startswith("/"):
+                raise ValueError(f"GATEWAY_SCOPES key {key!r} must be '/path' or 'METHOD /path'.")
+            if not (isinstance(scope, str) and scope.startswith("oan:") and len(scope) > 4
+                    and all(c.isalnum() or c in "-_.:" for c in scope)):
+                raise ValueError(
+                    f"GATEWAY_SCOPES scope {scope!r} must start with 'oan:' and use letters, digits, - _ . :"
+                )
+        return {str(k): v for k, v in parsed.items()}
+
+    @property
     def keycloak_token_issuer(self) -> str:
         base = (self.KEYCLOAK_PUBLIC_URL or self.KEYCLOAK_URL).rstrip("/")
         return (self.KEYCLOAK_ISSUER or f"{base}/realms/{self.KEYCLOAK_REALM}").rstrip("/")
@@ -307,6 +372,12 @@ class Settings(BaseSettings):
             raise ValueError(
                 "GATEWAY_PARTNER_AUTH=keycloak needs PARTICIPANT_AUTH_PROVIDER=keycloak: try-it sends "
                 "the participant's Keycloak access token to the gateway."
+            )
+        self.gateway_scopes  # noqa: B018 - refuses a malformed GATEWAY_SCOPES at start-up
+        if self.PM_PROD_STAFF_API_URL and not (self.PM_PROD_TOKEN_URL and self.PM_PROD_CLIENT_SECRET):
+            raise ValueError(
+                "PM_PROD_STAFF_API_URL needs PM_PROD_TOKEN_URL and PM_PROD_CLIENT_SECRET: production's PM "
+                "is reached with its own service account."
             )
         if self.KEYCLOAK_PROD_URL and not self.KEYCLOAK_PROD_ADMIN_CLIENT_SECRET:
             raise ValueError(
@@ -353,8 +424,49 @@ class Settings(BaseSettings):
     #: Access policies given at onboarding: a JSON list of PM PolicyInput
     #: objects. "[]": none - PM staff add them; the portal shows no access until then.
     PM_DEFAULT_POLICIES: str = "[]"
+    #: The sandbox approves its own onboarding requests in this PM. Off: they wait
+    #: for PM's staff (maker-checker); the sandbox reads the outcome (PENDING until then).
+    PM_AUTO_APPROVE: bool = True
+    # Production's own PM (one per cluster). Empty URL = production partners go
+    # nowhere (only the PM above, as before). A participant is onboarded there when
+    # production access is approved, with production's JWKS URL
+    # (<PM_PROD_PARTNER_JWKS_BASE_URL>/partners/<id>/production/jwks.json), and
+    # disabled there when it is taken away.
+    PM_PROD_STAFF_API_URL: str = ""
+    PM_PROD_TOKEN_URL: str = ""
+    #: Empty = PM_CLIENT_ID.
+    PM_PROD_CLIENT_ID: str = ""
+    PM_PROD_CLIENT_SECRET: str = ""
+    #: This API as production's PM reaches it; empty = PM_PARTNER_JWKS_BASE_URL.
+    PM_PROD_PARTNER_JWKS_BASE_URL: str = ""
+    PM_PROD_DEFAULT_POLICIES: str = "[]"
+    #: Off by default: production partners are approved by production PM's staff.
+    PM_PROD_AUTO_APPROVE: bool = False
+    #: Which PM release each PM runs (app/integrations/openg2p_contract.py PM_PROFILES):
+    #: "1.0" (COSS today: a key is needed to onboard, no policies), "develop" (live JWKS,
+    #: policies, use cases) or "auto" (GET /metadata answers on develop only).
+    PM_API_VERSION: Literal["auto", "1.0", "develop"] = "auto"
+    PM_PROD_API_VERSION: Literal["auto", "1.0", "develop"] = "auto"
+    #: Where an API product's data policy (ApiProduct.pm_policy) is filed:
+    #: "pm" (PM policy requests; needs a PM with policies), "cm" (the COSS Consent
+    #: Manager: one binding per partner and registry, AWE approves widenings), "none",
+    #: or "auto" (pm when the environment's PM has policies, else cm when CM_ADMIN_* is set).
+    POLICY_BACKEND: Literal["auto", "pm", "cm", "none"] = "auto"
+    # COSS Consent Manager staff API (policy bindings), with the sandbox's service
+    # account holding CONSENT_MANAGER_ADMIN in the realm the CM trusts. Empty URL = off.
+    CM_ADMIN_API_URL: str = ""
+    CM_ADMIN_TOKEN_URL: str = ""
+    CM_ADMIN_CLIENT_ID: str = "oan-sandbox-cm"
+    CM_ADMIN_CLIENT_SECRET: str = ""
+    # Production's own CM (one per cluster); empty URL = production apps' policies go
+    # nowhere through the CM.
+    CM_PROD_ADMIN_API_URL: str = ""
+    CM_PROD_ADMIN_TOKEN_URL: str = ""
+    #: Empty = CM_ADMIN_CLIENT_ID.
+    CM_PROD_ADMIN_CLIENT_ID: str = ""
+    CM_PROD_ADMIN_CLIENT_SECRET: str = ""
 
-    @field_validator("PM_DEFAULT_POLICIES")
+    @field_validator("PM_DEFAULT_POLICIES", "PM_PROD_DEFAULT_POLICIES")
     @classmethod
     def _check_pm_policies(cls, v: str) -> str:
         try:
@@ -363,11 +475,11 @@ class Settings(BaseSettings):
             raise ValueError("PM_DEFAULT_POLICIES must be JSON.") from exc
         if not isinstance(value, list) or not all(isinstance(p, dict) for p in value):
             raise ValueError("PM_DEFAULT_POLICIES must be a JSON list of objects.")
+        for policy in value:
+            # PM refuses purposes on a use-case policy (OpenG2P PM G2P-5719).
+            if policy.get("use_case") and policy.get("allowed_purposes"):
+                raise ValueError("PM_DEFAULT_POLICIES: a use_case policy takes no allowed_purposes.")
         return v or "[]"
-
-    @property
-    def pm_default_policy_list(self) -> list[dict]:
-        return json.loads(self.PM_DEFAULT_POLICIES)
 
     # --------------------------------------------- rate limits per product
     # API products carry an optional per-minute limit and per-day quota; an

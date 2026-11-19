@@ -52,6 +52,9 @@ class FakePM:
             "PM_CLIENT_SECRET": "pm-secret",
             "PM_PARTNER_JWKS_BASE_URL": "https://api.sandbox.example.org/oan",
             "PM_DEFAULT_POLICIES": policies,
+            # The PM release with live JWKS and policies (openg2p_contract.PM_PROFILES).
+            "PM_API_VERSION": "develop",
+            "PM_PROD_API_VERSION": "develop",
         }.items():
             monkeypatch.setattr(settings, name, value)
         for name in ("get_partner", "onboard", "open_onboarding_request", "approve", "disable", "enable"):

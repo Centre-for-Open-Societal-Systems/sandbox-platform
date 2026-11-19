@@ -71,7 +71,19 @@ const APP_ACTIONS: Record<
 
 export default function AppsPage() {
   const queryClient = useQueryClient();
+  const { notify } = useToast();
   const list = useListQuery({ sortBy: "added_date" });
+  const resyncAll = useMutation({
+    mutationFn: () => adminAppsApi.resyncAll(),
+    onSuccess: (result) => {
+      notify(
+        `Re-synced ${result.synced} of ${result.apps} app(s)${result.failed ? `; ${result.failed} failed` : ""}.`,
+        result.failed ? "error" : "success",
+      );
+      queryClient.invalidateQueries({ queryKey: ["admin", "apps"] });
+    },
+    onError: (error: Error) => notify(error.message, "error"),
+  });
   const [viewingId, setViewingId] = React.useState<number | null>(null);
 
   const appsQuery = useQuery({
@@ -149,6 +161,17 @@ export default function AppsPage() {
         description="Participant apps, the API products they asked for and their keys. Every decision is written to the API gateway at once."
         breadcrumbs={[{ label: "Home", href: "/admin/dashboard" }, { label: "Participants" }, { label: "Apps & Keys" }]}
         search={{ value: list.searchInput, onChange: list.setSearchInput, placeholder: "App name or consumer" }}
+        actions={
+          <Button
+            variant="outline"
+            onClick={() => resyncAll.mutate()}
+            loading={resyncAll.isPending}
+            title="Write every active app to Keycloak / the gateway again, e.g. after the gateway scopes changed"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Re-sync all
+          </Button>
+        }
       />
 
       <FilterBar>
@@ -428,10 +451,22 @@ function AppDetailDialog({ appId, onClose, onChanged }: { appId: number; onClose
                 </ul>
               </section>
 
-              {app.gateway_warnings.length > 0 || app.gateway_routes.length > 0 ? (
+              {app.gateway_warnings.length > 0 || app.gateway_routes.length > 0 || app.gateway_scopes?.length ? (
                 <section>
                   <h3 className="mb-2 text-sm font-semibold">Gateway</h3>
-                  <p className="text-xs text-subtle">{app.gateway_routes.length} route(s) granted to this app.</p>
+                  {app.gateway_scopes?.length ? (
+                    <p className="mb-1 flex flex-wrap items-center gap-1 text-xs text-subtle">
+                      Token scopes:
+                      {app.gateway_scopes.map((scope) => (
+                        <code key={scope} className="rounded bg-muted px-1.5 py-0.5 text-foreground">
+                          {scope}
+                        </code>
+                      ))}
+                    </p>
+                  ) : null}
+                  {app.gateway_routes.length > 0 ? (
+                    <p className="text-xs text-subtle">{app.gateway_routes.length} route id(s) in the token (legacy).</p>
+                  ) : null}
                   {app.gateway_warnings.map((warning) => (
                     <p key={warning} className="mt-2 rounded-lg bg-amber-50 p-2 text-xs text-amber-800">
                       {warning}
