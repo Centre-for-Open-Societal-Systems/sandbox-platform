@@ -21,14 +21,19 @@
 // ecr-credential-provider with the instance role oan-services-dev-ecr-pull (the same
 // way a2c and grievance pull). That role needs pull access to eoan/sandbox-platform/*.
 //
-// staging (the staging branch, like oan_a2c_service's): the same Versions/Chart/Registry/Test
-// stages with helm/environments/staging/oan-sandbox.yaml, then its own API and web images
-// (the web image carries the staging host, so develop's cannot be promoted), tagged
+// staging (the staging branch, like oan_grievance_service's): promotes what develop built. The
+// API image is not rebuilt: develop's image of the same source tree (the develop commit whose
+// tree equals this commit's, i.e. the fast-forwarded commit itself) is tagged
 //                <chart version>-staging.<build number>, staging-<commit>, staging
-// and "staging → QA cluster (helm)": deployment/jenkins/deploy-cluster.sh installs release
+// in ECR (same manifest). The web image is the one image staging builds, as grievance's
+// staging builds its seed: NEXT_PUBLIC_API_BASE_URL (the staging host) is inlined at build
+// time, so develop's web image cannot be reused. It gets the same three tags. Then
+// "staging → QA cluster (helm)": deployment/jenkins/deploy-cluster.sh installs release
 // oan-sandbox in namespace sandbox of the QA cluster (sandbox.qa.oanstaging.com) from the
 // oan-ci-deploy agent with credential oan-qa-kubeconfig (the jenkins-qa-deployer
-// ServiceAccount of oan-helm docs/qa-cluster.md). It never moves develop's tags.
+// ServiceAccount of oan-helm docs/qa-cluster.md). It never moves develop's tags. A staging
+// build fails if develop has not built this source tree yet: merge to develop, let that build
+// push, then promote (Actions → "Promote develop to staging" fast-forwards staging to develop).
 //
 // Builds start when a PR is merged into develop. The chart lives in this repository,
 // so a chart or values change is deployed like any other develop change; nothing
@@ -142,8 +147,8 @@ pipeline {
           env.TAG = version
           // Unique per build: what gets deployed, and what Rancher shows.
           env.IMAGE_TAG = "${version}-${env.BUILD_NUMBER}"
-          // staging images have tags of their own (their web image differs): staging-<commit>,
-          // <chart version>-staging.<build>, staging. The bare chart version stays develop's.
+          // staging images have tags of their own: staging-<commit>, <chart version>-staging.<build>,
+          // staging. The bare chart version stays develop's.
           env.SOURCE_TAG = env.COMMIT_TAG
           env.MOVING_TAG = 'develop'
           env.DEPLOY_PREFIX = "${version}-"
@@ -152,6 +157,17 @@ pipeline {
             env.MOVING_TAG = 'staging'
             env.DEPLOY_PREFIX = "${version}-staging."
             env.IMAGE_TAG = "${version}-staging.${env.BUILD_NUMBER}"
+            // The develop commit with this source tree: its <commit> tag names the API image to
+            // promote. The workspace holds staging only, so fetch develop first.
+            sh 'git fetch --quiet --no-tags origin +refs/heads/develop:refs/remotes/origin/develop'
+            env.DEVELOP_TAG = sh(returnStdout: true, script: '''
+              want=$(git rev-parse HEAD^{tree})
+              git log --format='%H %T' origin/develop | awk -v t="$want" '$2 == t { print substr($1, 1, 12); exit }'
+            ''').trim()
+            if (!env.DEVELOP_TAG) {
+              error("No develop commit has this source tree (${env.COMMIT_TAG}): promote staging from develop, not from another branch")
+            }
+            echo "Promoting develop's API image ${env.DEVELOP_TAG}"
           }
           if (!(env.IMAGE_TAG ==~ /[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}/)) {
             error("Image tag '${env.IMAGE_TAG}' is not a valid image tag")
@@ -194,11 +210,21 @@ pipeline {
             '''
             // Build when this chart version or this commit is missing: a new develop
             // commit under the same chart version rebuilds and moves the version tag.
-            // staging checks only its own staging-<commit> tag.
+            // staging builds only the web image: it checks web's staging-<commit> tag, and
+            // that develop pushed the API image it promotes.
+            if (env.STAGING == 'true') {
+              def developBuilt = sh(returnStatus: true, script: '''
+                $AWS ecr describe-images --repository-name "$ECR_REPO_PREFIX-api" --image-ids imageTag="$DEVELOP_TAG" >/dev/null 2>&1
+              ''') == 0
+              if (!developBuilt) {
+                error("${env.ECR_REPO_PREFIX}-api:${env.DEVELOP_TAG} is not in ECR: the develop build of this commit has not pushed yet")
+              }
+            }
             def pushed = sh(returnStatus: true, script: '''
+              repos="$ECR_REPO_PREFIX-api $ECR_REPO_PREFIX-web"
               tags="$TAG $SOURCE_TAG"
-              [ "$STAGING" = true ] && tags="$SOURCE_TAG"
-              for repo in "$ECR_REPO_PREFIX-api" "$ECR_REPO_PREFIX-web"; do
+              if [ "$STAGING" = true ]; then repos="$ECR_REPO_PREFIX-web"; tags="$SOURCE_TAG"; fi
+              for repo in $repos; do
                 for t in $tags; do
                   $AWS ecr describe-images --repository-name "$repo" --image-ids imageTag="$t" >/dev/null 2>&1 || exit 1
                 done
@@ -212,7 +238,11 @@ pipeline {
     }
 
     stage('Test') {
-      when { environment name: 'NEED_BUILD', value: 'true' }
+      // staging: develop's build already tested this source tree.
+      when {
+        environment name: 'NEED_BUILD', value: 'true'
+        not { branch 'staging' }
+      }
       parallel {
         stage('Backend') {
           steps {
@@ -263,7 +293,12 @@ pipeline {
             api_tags="$api_tags $API_IMAGE"
             web_tags="$web_tags $WEB_IMAGE"
           fi
-          docker build -f docker/sandbox-api/Dockerfile $(printf -- '-t %s ' $api_tags) .
+          # staging promotes develop's API image (stage "Promote (staging)") and builds only web.
+          if [ "$STAGING" = true ]; then
+            api_tags=""
+          else
+            docker build -f docker/sandbox-api/Dockerfile $(printf -- '-t %s ' $api_tags) .
+          fi
           # The browser API URL is built into the web image (one image per environment).
           docker build $(printf -- '-t %s ' $web_tags) \
             --build-arg NEXT_PUBLIC_API_BASE_URL="https://$SANDBOX_HOSTNAME/oan" \
@@ -359,34 +394,53 @@ pipeline {
       }
     }
 
-    // staging: the unique tag to deploy, resolved here because the deploy agent has no AWS
-    // access. As on develop: this build's tag, or after a skipped build the newest
-    // <chart version>-staging.<N> already on this commit's staging images.
-    stage('Deploy tag (staging)') {
+    // staging: promote. Resolves the unique tag to deploy (here, because the deploy agent has
+    // no AWS access): this build's, or after a skipped web build the newest
+    // <chart version>-staging.<N> already on this commit's staging web image. Then tags
+    // develop's API image (DEVELOP_TAG) with it, staging-<commit> and staging: same
+    // manifest, nothing rebuilt.
+    stage('Promote (staging)') {
       when { branch 'staging' }
       steps {
         script { withAws {
           env.DEPLOY_TAG = sh(returnStdout: true, script: '''
-            if [ "$NEED_BUILD" = true ]; then echo "$IMAGE_TAG"; exit 0; fi
-            found=$($AWS ecr describe-images --repository-name "$ECR_REPO_PREFIX-api" \
-                --image-ids imageTag="$SOURCE_TAG" --query 'imageDetails[0].imageTags' --output text \
-              | tr -d '\\r' | tr '\\t' '\\n' \
-              | awk -v p="$DEPLOY_PREFIX" 'index($0, p) == 1 { n = substr($0, length(p) + 1); if (n ~ /^[0-9]+$/) print n, $0 }' \
-              | sort -n | tail -n 1 | cut -d' ' -f2)
-            if [ -n "$found" ]; then echo "$found"; exit 0; fi
-            # Images pushed without such a tag get this run's (same manifest, no rebuild).
-            for c in api web; do
-              repo="$ECR_REPO_PREFIX-$c"
-              manifest=$($AWS ecr batch-get-image --repository-name "$repo" --image-ids imageTag="$SOURCE_TAG" \
+            # retag <repo> <from tag> <to tag>: point <to tag> at <from tag>'s manifest.
+            retag() {
+              want=$($AWS ecr describe-images --repository-name "$1" --image-ids imageTag="$2" \
+                --query 'imageDetails[0].imageDigest' --output text | tr -d '\\r')
+              have=$($AWS ecr describe-images --repository-name "$1" --image-ids imageTag="$3" \
+                --query 'imageDetails[0].imageDigest' --output text 2>/dev/null | tr -d '\\r' || true)
+              [ "$want" = "$have" ] && return 0
+              manifest=$($AWS ecr batch-get-image --repository-name "$1" --image-ids imageTag="$2" \
                 --query 'images[0].imageManifest' --output text)
-              media_type=$($AWS ecr batch-get-image --repository-name "$repo" --image-ids imageTag="$SOURCE_TAG" \
+              media_type=$($AWS ecr batch-get-image --repository-name "$1" --image-ids imageTag="$2" \
                 --query 'images[0].imageManifestMediaType' --output text | tr -d '\\r')
-              $AWS ecr put-image --repository-name "$repo" --image-tag "$IMAGE_TAG" \
+              $AWS ecr put-image --repository-name "$1" --image-tag "$3" \
                 --image-manifest "$manifest" --image-manifest-media-type "$media_type" >/dev/null
+              echo "Tagged $1:$2 as $3" >&2
+            }
+
+            web="$ECR_REPO_PREFIX-web"
+            api="$ECR_REPO_PREFIX-api"
+            deploy_tag=$IMAGE_TAG
+            if [ "$NEED_BUILD" != true ]; then
+              found=$($AWS ecr describe-images --repository-name "$web" \
+                  --image-ids imageTag="$SOURCE_TAG" --query 'imageDetails[0].imageTags' --output text \
+                | tr -d '\\r' | tr '\\t' '\\n' \
+                | awk -v p="$DEPLOY_PREFIX" 'index($0, p) == 1 { n = substr($0, length(p) + 1); if (n ~ /^[0-9]+$/) print n, $0 }' \
+                | sort -n | tail -n 1 | cut -d' ' -f2)
+              if [ -n "$found" ]; then
+                deploy_tag=$found
+              else
+                retag "$web" "$SOURCE_TAG" "$deploy_tag"
+              fi
+            fi
+            for t in "$deploy_tag" "$SOURCE_TAG" "$MOVING_TAG"; do
+              retag "$api" "$DEVELOP_TAG" "$t"
             done
-            echo "$IMAGE_TAG"
+            echo "$deploy_tag"
           ''').trim().readLines().last()
-          echo "Deploying images tagged ${env.DEPLOY_TAG}"
+          echo "Deploying images tagged ${env.DEPLOY_TAG} (API promoted from develop ${env.DEVELOP_TAG})"
         } }
       }
     }

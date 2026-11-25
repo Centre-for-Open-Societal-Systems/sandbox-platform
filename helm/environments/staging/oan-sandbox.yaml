@@ -67,8 +67,8 @@ secret:
 api:
   enabled: true
   image:
-    # Jenkinsfile ECR_REPO_PREFIX + "-api". No pull Secret on QA: the node pulls from ECR with its
-    # IAM role (kubelet ecr-credential-provider), which needs pull access to eoan/sandbox-platform/*.
+    # Jenkinsfile ECR_REPO_PREFIX + "-api": develop's image, promoted (retagged) by the staging build.
+    # No pull Secret on QA: the node pulls from ECR with its IAM role (kubelet ecr-credential-provider), which needs pull access to eoan/sandbox-platform/*.
     repository: 379220350808.dkr.ecr.ap-south-1.amazonaws.com/eoan/sandbox-platform/oan-sandbox-api
   imagePullSecrets: []
   persistence:
