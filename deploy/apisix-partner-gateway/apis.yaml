@@ -1,0 +1,79 @@
+# OAN partner APIs behind APISIX: the source of truth of the oan-partner-gateway chart
+# (API-as-code). Edit this file, run `python generate_k8s_chart.py`, review the diff and
+# `helm upgrade`. The sandbox needs nothing for a new operation of an existing API: apps
+# holding the API's scope can call it as soon as the route is live.
+#
+# Per API:
+#   name         Kubernetes name of its ApisixUpstream / ApisixPluginConfig / ApisixRoute
+#   values       the chart value block that switches it on: <values>.enabled, <values>.host,
+#                optional <values>.basePath (path the host serves the API under) and
+#                <values>.upstreamTls (client certificate for the upstream, see values.yaml)
+#   prefix       gateway path prefix, stripped before the call
+#   scope        OAuth scope an app token needs (Keycloak client scope of the same name).
+#                Names never change once partners hold them.
+#   readTimeout  upstream read timeout, seconds (default 30)
+#   operations   one route each: method + path under the prefix (`:name` = path parameter).
+#                Optional per operation: `name` (route name; default derived from method and
+#                path), `priority` (default: number of fixed segments when the path has a
+#                parameter), `scope` (this operation needs another scope than its API).
+#
+# Only what partners call: staff APIs are not routed here (staff use their own portals).
+
+apis:
+  # Consent Manager console host: only its partner portal API is routed.
+  - name: consent-manager-partner-portal-api
+    values: consentManager.portalApi
+    prefix: /consent-manager
+    scope: "oan:consent-manager-portal"
+    readTimeout: 30
+    operations:
+      - {method: POST, path: /consent/v1/partner-portal/consent-requests}
+      - {method: POST, path: "/consent/v1/partner-portal/consent-requests/:request_id/verify-otp"}
+      - {method: GET, path: "/consent/v1/partner-portal/consent-requests/:request_id"}
+      - {method: GET, path: /consent/v1/partner-portal/consents}
+      - {method: POST, path: "/consent/v1/partner-portal/consent-requests/:request_id/resend-otp"}
+      - {method: GET, path: /consent/v1/partner-portal/me}
+      - {method: GET, path: /consent/v1/partner-portal/bindings}
+      - {method: GET, path: /consent/v1/partner-portal/request-settings}
+      - {method: GET, path: /consent/v1/partner-portal/subject-auth}
+      - {method: GET, path: /consent/v1/partner-portal/consent-requests}
+      - {method: GET, path: "/consent/v1/partner-portal/consents/:consent_id"}
+      - {method: GET, path: "/consent/v1/partner-portal/consents/:consent_id/receipt"}
+      - {method: GET, path: "/consent/v1/partner-portal/consents/:consent_id/record"}
+      - {method: POST, path: "/consent/v1/partner-portal/consent-requests/:request_id/evidence"}
+      - {method: POST, path: "/consent/v1/partner-portal/consent-requests/:request_id/submit"}
+      - {method: POST, path: "/consent/v1/partner-portal/consent-requests/:request_id/cancel"}
+
+  # Consent Manager partner API (validate, consent status, receipts, JWKS).
+  - name: consent-manager-partner-api
+    values: consentManager.partnerApi
+    prefix: /consent-manager-partner
+    scope: "oan:consent-manager-partner"
+    readTimeout: 30
+    operations:
+      - {method: POST, path: /consent/v1/validate}
+      - {method: GET, path: /ping}
+      - {method: GET, path: /.well-known/jwks.json}
+      - {method: GET, path: "/consent/v1/consents/:consent_id/status"}
+      - {method: GET, path: "/consent/v1/receipts/:receipt_id"}
+
+  # Partner Management key fetch API (a partner's public keys).
+  - name: partner-management-keys-api
+    values: partnerManagement.keysApi
+    prefix: /partner-management-keys
+    scope: "oan:partner-management-keys"
+    readTimeout: 30
+    operations:
+      - {method: GET, path: /ping}
+      - {method: GET, path: "/keys/:partner_id"}
+      - {method: GET, path: "/keys/:partner_id/jwks.json"}
+      - {method: GET, path: "/keys/:partner_id/:kid"}
+
+  # Aggregation Layer (DCI search).
+  - name: aggregation-layer-api
+    values: aggregationLayer
+    prefix: /aggregation-layer
+    scope: "oan:aggregation-layer"
+    readTimeout: 60
+    operations:
+      - {method: POST, path: /dci/registry/sync/search}

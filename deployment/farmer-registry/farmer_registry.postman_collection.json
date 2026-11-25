@@ -1,0 +1,676 @@
+{
+  "info": {
+    "_postman_id": "781ed4fd-859b-4d4b-b387-389077e602d6",
+    "name": "Farmer Registry API Collection",
+    "description": "Staff-API load and smoke requests for the OpenG2P Farmer Registry (dev), mirroring the Locust scenarios in `farmer-registry/performance-testing/locust/api` (register read, change request, intake create). Run with the Postman runner or Newman.\n\n**Hosts (dev).** Staff API `https://staff-farmer-development.oanstaging.com` (the portal host `farmer-registry-development.oanstaging.com` serves only the UI; API paths there return the HTML page with HTTP 200). Keycloak `https://keycloak-development.oanstaging.com`, realm `staff`.\n\n**Auth.** Every call needs a bearer token *and* a CSRF double-submit (same value in the `X-CSRF-Token` cookie and header). The collection pre-request script reuses the `X-CSRF-Token` cookie already in the Postman cookie jar for the host (the server may set its own), or creates one, then sets the header to match and writes the cookie to the jar. Get the token with *0.1*. No token or password is stored in this collection: keep credentials in your own environment, as current values.\n\n**Troubleshooting G2P-AUT-403 CSRF token missing or invalid.** Run requests from this collection (the script lives here, not on single requests); use the Postman desktop app or the Desktop Agent, since the web agent cannot send cookies; clear the host's cookies and `CSRF_TOKEN` if it persists.\n\n**Success check.** Each request asserts HTTP < 400 and `response_header.response_status != ERROR`, because validation errors arrive as HTTP 200.\n\n**Order.** Run in order: the 1.x requests store the farmer that the 2.x requests change; 3.x is independent.\n\n**Not included.** Partner-API ingestion: its Locust flow is still a placeholder (see `performance-testing/README.md`), it needs signed partner requests, and its host has no public DNS on dev.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "59130667",
+    "_collection_link": "https://go.postman.co/collection/49316197-781ed4fd-859b-4d4b-b387-389077e602d6?source=collection_link"
+  },
+  "item": [
+    {
+      "name": "0.1 Get Access Token (Keycloak password grant)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('token issued', () => pm.response.to.have.status(200));",
+              "const json = pm.response.json();",
+              "if (json.access_token) {",
+              "    pm.collectionVariables.set('ACCESS_TOKEN', json.access_token);",
+              "    console.log(`ACCESS_TOKEN set, expires in ${json.expires_in}s`);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/x-www-form-urlencoded"
+          }
+        ],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "grant_type",
+              "value": "password"
+            },
+            {
+              "key": "client_id",
+              "value": "{{OIDC_CLIENT_ID}}"
+            },
+            {
+              "key": "client_secret",
+              "value": "{{OIDC_CLIENT_SECRET}}"
+            },
+            {
+              "key": "username",
+              "value": "{{OIDC_USERNAME}}"
+            },
+            {
+              "key": "password",
+              "value": "{{OIDC_PASSWORD}}"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{KEYCLOAK_BASE}}/realms/{{KEYCLOAK_REALM}}/protocol/openid-connect/token",
+          "host": [
+            "{{KEYCLOAK_BASE}}"
+          ],
+          "path": [
+            "realms",
+            "{{KEYCLOAK_REALM}}",
+            "protocol",
+            "openid-connect",
+            "token"
+          ]
+        },
+        "description": "Gets an access token from Keycloak (password grant) and stores it in ACCESS_TOKEN. Put OIDC_USERNAME, OIDC_PASSWORD and OIDC_CLIENT_SECRET in your own Postman environment, never in the collection. The secret is in Keycloak: realm staff > Clients > farmer-registry-staff-portal > Credentials. If the client does not allow the password grant, log in to the portal, copy the X-Access-Token cookie value, and set it as the ACCESS_TOKEN current value instead."
+      },
+      "response": []
+    },
+    {
+      "name": "1.1 Get Register Summary Data",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"request_header\": {\n        \"sender_app_mnemonic\": \"Postman Load Test\",\n        \"sender_app_url\": \"postman\",\n        \"request_id\": \"{{$guid}}\",\n        \"request_timestamp\": \"{{$isoTimestamp}}\"\n    },\n    \"request_body\": {\n        \"pagination_request\": {\n            \"current_page\": 1,\n            \"page_size\": 20,\n            \"sort_by\": \"\",\n            \"filter_by\": \"\",\n            \"search_text\": \"\"\n        },\n        \"request_payload\": {\n            \"register_id\": \"{{REGISTER_FARMER}}\"\n        }\n    }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{STAFF_API_BASE}}/register-data/get_register_summary_data",
+          "host": [
+            "{{STAFF_API_BASE}}"
+          ],
+          "path": [
+            "register-data",
+            "get_register_summary_data"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "1.2 Search Farmer Register",
+      "event": [
+        {
+          "script": {
+            "exec": [
+              "const rows = (pm.response.json().response_body || {}).response_payload || [];",
+              "pm.test('search returned at least one farmer', () => pm.expect(rows.length).to.be.above(0));",
+              "if (rows.length) {",
+              "    pm.collectionVariables.set('SUBJECT_INTERNAL_ID', rows[0].internal_record_id);",
+              "}"
+            ],
+            "type": "text/javascript"
+          },
+          "listen": "test"
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"request_header\": {\n        \"sender_app_mnemonic\": \"Postman Load Test\",\n        \"sender_app_url\": \"postman\",\n        \"request_id\": \"{{$guid}}\",\n        \"request_timestamp\": \"{{$isoTimestamp}}\"\n    },\n    \"request_body\": {\n        \"pagination_request\": {\n            \"current_page\": 1,\n            \"page_size\": 10,\n            \"sort_by\": \"\",\n            \"filter_by\": \"\",\n            \"search_text\": \"{{SEARCH_TEXT}}\"\n        },\n        \"request_payload\": {\n            \"register_id\": \"{{REGISTER_FARMER}}\"\n        }\n    }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{STAFF_API_BASE}}/register-data/search_in_a_register",
+          "host": [
+            "{{STAFF_API_BASE}}"
+          ],
+          "path": [
+            "register-data",
+            "search_in_a_register"
+          ]
+        },
+        "description": "Stores the first result's `internal_record_id` as `SUBJECT_INTERNAL_ID`."
+      },
+      "response": []
+    },
+    {
+      "name": "1.3 Get Subject Record",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "value": "application/json",
+            "key": "Content-Type"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"request_header\": {\n        \"sender_app_mnemonic\": \"Postman Load Test\",\n        \"sender_app_url\": \"postman\",\n        \"request_id\": \"{{$guid}}\",\n        \"request_timestamp\": \"{{$isoTimestamp}}\"\n    },\n    \"request_body\": {\n        \"pagination_request\": {\n            \"current_page\": 1,\n            \"page_size\": 20,\n            \"sort_by\": \"\",\n            \"filter_by\": \"\",\n            \"search_text\": \"\"\n        },\n        \"request_payload\": {\n            \"subject_register_id\": \"{{REGISTER_FARMER}}\",\n            \"subject_record_id\": \"{{SUBJECT_INTERNAL_ID}}\"\n        }\n    }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{STAFF_API_BASE}}/register-data/get_subject_record",
+          "host": [
+            "{{STAFF_API_BASE}}"
+          ],
+          "path": [
+            "register-data",
+            "get_subject_record"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "2.1 Get All Sections",
+      "event": [
+        {
+          "script": {
+            "exec": [
+              "const sections = (pm.response.json().response_body || {}).response_payload || [];",
+              "const wanted = pm.collectionVariables.get('CR_SECTION_ID');",
+              "const section = sections.find(s => s.section_id === wanted);",
+              "pm.test(`section ${wanted} exists`, () => pm.expect(section).to.be.an('object'));",
+              "if (section) {",
+              "    pm.collectionVariables.set('CR_SECTION_REGISTER_ID', section.section_register_id);",
+              "    // Core sections have their own change-request controller.",
+              "    pm.collectionVariables.set('CR_CREATE_PATH', section.is_core_section",
+              "        ? '/change-requests-core-data/create_change_request_for_core_data'",
+              "        : '/change-requests/create_change_request');",
+              "}"
+            ],
+            "type": "text/javascript"
+          },
+          "listen": "test"
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"request_header\": {\n        \"sender_app_mnemonic\": \"Postman Load Test\",\n        \"sender_app_url\": \"postman\",\n        \"request_id\": \"{{$guid}}\",\n        \"request_timestamp\": \"{{$isoTimestamp}}\"\n    },\n    \"request_body\": {\n        \"pagination_request\": {\n            \"current_page\": 1,\n            \"page_size\": 20,\n            \"sort_by\": \"\",\n            \"filter_by\": \"\",\n            \"search_text\": \"\"\n        },\n        \"request_payload\": {\n            \"register_id\": \"{{REGISTER_FARMER}}\"\n        }\n    }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{STAFF_API_BASE}}/register-section-metadata/get_all_sections",
+          "host": [
+            "{{STAFF_API_BASE}}"
+          ],
+          "path": [
+            "register-section-metadata",
+            "get_all_sections"
+          ]
+        },
+        "description": "**2. Change request.** Raise a change request on the farmer found by 1.2: change the middle name in the personal identification section. Run 1.2 first. The section metadata decides whether the core-data controller is used.\n\nFinds `CR_SECTION_ID`; stores its `section_register_id` and the matching create endpoint (`CR_CREATE_PATH`)."
+      },
+      "response": []
+    },
+    {
+      "name": "2.2 Get Tab Records",
+      "event": [
+        {
+          "script": {
+            "exec": [
+              "// Records are grouped by section_register_id; the record being edited may differ from the subject.",
+              "const groups = (pm.response.json().response_body || {}).response_payload || [];",
+              "const registerId = pm.collectionVariables.get('CR_SECTION_REGISTER_ID');",
+              "const group = groups.find(g => g.section_register_id === registerId) || {};",
+              "const record = (group.records || [])[0];",
+              "pm.test('a record to change exists in this tab', () => pm.expect(record).to.be.an('object'));",
+              "if (record) {",
+              "    pm.collectionVariables.set('TARGET_INTERNAL_ID', record.internal_record_id);",
+              "    pm.collectionVariables.set('CR_OLD_MIDDLE_NAME', record.middle_name || '');",
+              "}"
+            ],
+            "type": "text/javascript"
+          },
+          "listen": "test"
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "value": "application/json",
+            "key": "Content-Type"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"request_header\": {\n        \"sender_app_mnemonic\": \"Postman Load Test\",\n        \"sender_app_url\": \"postman\",\n        \"request_id\": \"{{$guid}}\",\n        \"request_timestamp\": \"{{$isoTimestamp}}\"\n    },\n    \"request_body\": {\n        \"pagination_request\": {\n            \"current_page\": 1,\n            \"page_size\": 20,\n            \"sort_by\": \"\",\n            \"filter_by\": \"\",\n            \"search_text\": \"\"\n        },\n        \"request_payload\": {\n            \"subject_register_id\": \"{{REGISTER_FARMER}}\",\n            \"subject_record_id\": \"{{SUBJECT_INTERNAL_ID}}\",\n            \"tab_id\": \"{{CR_TAB_ID}}\"\n        }\n    }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{STAFF_API_BASE}}/register-data/get_tab_records",
+          "host": [
+            "{{STAFF_API_BASE}}"
+          ],
+          "path": [
+            "register-data",
+            "get_tab_records"
+          ]
+        },
+        "description": "Stores the record to edit (`TARGET_INTERNAL_ID`) and its current middle name."
+      },
+      "response": []
+    },
+    {
+      "name": "2.3 Create Change Request",
+      "event": [
+        {
+          "script": {
+            "exec": [
+              "// A change request that changes nothing is rejected, so pick a different middle name.",
+              "const names = ['Alemu', 'Tesfaye', 'Worku', 'Getachew', 'Haile', 'Desta'];",
+              "const old = pm.collectionVariables.get('CR_OLD_MIDDLE_NAME');",
+              "const choices = names.filter(n => n !== old);",
+              "pm.collectionVariables.set('CR_NEW_MIDDLE_NAME', choices[Math.floor(Math.random() * choices.length)]);"
+            ],
+            "type": "text/javascript"
+          },
+          "listen": "prerequest"
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"request_header\": {\n        \"sender_app_mnemonic\": \"Postman Load Test\",\n        \"sender_app_url\": \"postman\",\n        \"request_id\": \"{{$guid}}\",\n        \"request_timestamp\": \"{{$isoTimestamp}}\"\n    },\n    \"request_body\": {\n        \"pagination_request\": {\n            \"current_page\": 1,\n            \"page_size\": 20,\n            \"sort_by\": \"\",\n            \"filter_by\": \"\",\n            \"search_text\": \"\"\n        },\n        \"request_payload\": {\n            \"register_id\": \"{{REGISTER_FARMER}}\",\n            \"tab_id\": \"{{CR_TAB_ID}}\",\n            \"section_id\": \"{{CR_SECTION_ID}}\",\n            \"section_register_id\": \"{{CR_SECTION_REGISTER_ID}}\",\n            \"internal_record_id\": \"{{SUBJECT_INTERNAL_ID}}\",\n            \"change_payload\": [\n                {\n                    \"internal_record_id\": \"{{TARGET_INTERNAL_ID}}\",\n                    \"edit_action\": \"UPDATE\",\n                    \"middle_name\": \"{{CR_NEW_MIDDLE_NAME}}\"\n                }\n            ],\n            \"documents\": null\n        }\n    }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{STAFF_API_BASE}}{{CR_CREATE_PATH}}",
+          "host": [
+            "{{STAFF_API_BASE}}{{CR_CREATE_PATH}}"
+          ]
+        },
+        "description": "`internal_record_id` is the subject farmer; `change_payload[].internal_record_id` is the record being edited."
+      },
+      "response": []
+    },
+    {
+      "name": "3.1 Get Intake Form Submissions Summary",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "value": "application/json",
+            "key": "Content-Type"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"request_header\": {\n        \"sender_app_mnemonic\": \"Postman Load Test\",\n        \"sender_app_url\": \"postman\",\n        \"request_id\": \"{{$guid}}\",\n        \"request_timestamp\": \"{{$isoTimestamp}}\"\n    },\n    \"request_body\": {\n        \"pagination_request\": {\n            \"current_page\": 1,\n            \"page_size\": 20,\n            \"sort_by\": \"\",\n            \"filter_by\": \"\",\n            \"search_text\": \"\"\n        },\n        \"request_payload\": {}\n    }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{STAFF_API_BASE}}/intake-form-data/get_intake_form_submissions_summary",
+          "host": [
+            "{{STAFF_API_BASE}}"
+          ],
+          "path": [
+            "intake-form-data",
+            "get_intake_form_submissions_summary"
+          ]
+        },
+        "description": "**3. Intake.** Create an intake submission. Save issues a new `SUBMISSION_ID`; set `INTAKE_REUSE_SUBMISSION` to `true` to add further sections to the same submission. Finalize succeeds only once every required section of the form has been saved; Render Intake Form lists them."
+      },
+      "response": []
+    },
+    {
+      "name": "3.2 Render Intake Form",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"request_header\": {\n        \"sender_app_mnemonic\": \"Postman Load Test\",\n        \"sender_app_url\": \"postman\",\n        \"request_id\": \"{{$guid}}\",\n        \"request_timestamp\": \"{{$isoTimestamp}}\"\n    },\n    \"request_body\": {\n        \"pagination_request\": {\n            \"current_page\": 1,\n            \"page_size\": 20,\n            \"sort_by\": \"\",\n            \"filter_by\": \"\",\n            \"search_text\": \"\"\n        },\n        \"request_payload\": {\n            \"form_id\": \"{{FARMER_INTAKE_FORM_ID}}\"\n        }\n    }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{STAFF_API_BASE}}/intake-form-metadata/render_intake_form",
+          "host": [
+            "{{STAFF_API_BASE}}"
+          ],
+          "path": [
+            "intake-form-metadata",
+            "render_intake_form"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "3.3 Save Intake Form Submission (personal identification)",
+      "event": [
+        {
+          "script": {
+            "exec": [
+              "// A new submission starts with submission_id null; the server issues one.",
+              "// With INTAKE_REUSE_SUBMISSION=true the section is added to SUBMISSION_ID instead.",
+              "const pick = list => list[Math.floor(Math.random() * list.length)];",
+              "pm.collectionVariables.set('INTAKE_FIRST_NAME', pick(['Amina', 'Fatuma', 'Hana', 'Tigist', 'Selam', 'Abebe', 'Kebede', 'Meron']));",
+              "pm.collectionVariables.set('INTAKE_LAST_NAME', pick(['Bekele', 'Alemu', 'Tesfaye', 'Worku', 'Girma', 'Haile']));",
+              "const birth = new Date('1990-01-01T00:00:00Z');",
+              "const now = new Date();",
+              "let age = now.getUTCFullYear() - birth.getUTCFullYear();",
+              "if (now.getUTCMonth() < birth.getUTCMonth() || (now.getUTCMonth() === birth.getUTCMonth() && now.getUTCDate() < birth.getUTCDate())) age--;",
+              "pm.collectionVariables.set('INTAKE_ESTIMATED_AGE', String(age));",
+              "const current = pm.collectionVariables.get('SUBMISSION_ID');",
+              "pm.collectionVariables.set('SUBMISSION_ID_JSON', current && pm.collectionVariables.get('INTAKE_REUSE_SUBMISSION') === 'true' ? JSON.stringify(current) : 'null');"
+            ],
+            "type": "text/javascript"
+          },
+          "listen": "prerequest"
+        },
+        {
+          "script": {
+            "exec": [
+              "const payload = (pm.response.json().response_body || {}).response_payload || {};",
+              "pm.test('submission_id returned', () => pm.expect(payload.submission_id).to.be.a('string'));",
+              "if (payload.submission_id) pm.collectionVariables.set('SUBMISSION_ID', payload.submission_id);"
+            ],
+            "type": "text/javascript"
+          },
+          "listen": "test"
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"request_header\": {\n        \"sender_app_mnemonic\": \"Postman Load Test\",\n        \"sender_app_url\": \"postman\",\n        \"request_id\": \"{{$guid}}\",\n        \"request_timestamp\": \"{{$isoTimestamp}}\"\n    },\n    \"request_body\": {\n        \"pagination_request\": {\n            \"current_page\": 1,\n            \"page_size\": 20,\n            \"sort_by\": \"\",\n            \"filter_by\": \"\",\n            \"search_text\": \"\"\n        },\n        \"request_payload\": {\n            \"submission_id\": {{SUBMISSION_ID_JSON}},\n            \"section_id\": \"farmer_farmer_personal_identification_section_01\",\n            \"section_register_id\": \"{{REGISTER_FARMER}}\",\n            \"section_payload\": {\n                \"first_name\": \"{{INTAKE_FIRST_NAME}}\",\n                \"middle_name\": \"\",\n                \"last_name\": \"{{INTAKE_LAST_NAME}}\",\n                \"father_first_name\": \"{{INTAKE_LAST_NAME}}\",\n                \"birth_date\": \"1990-01-01\",\n                \"estimated_age\": {{INTAKE_ESTIMATED_AGE}},\n                \"gender\": \"FEMALE\",\n                \"marital_status\": \"MARRIED\",\n                \"education_level\": \"BASIC\"\n            },\n            \"form_id\": \"{{FARMER_INTAKE_FORM_ID}}\",\n            \"register_id\": \"{{REGISTER_FARMER}}\",\n            \"documents\": null\n        }\n    }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{STAFF_API_BASE}}/intake-form-data/save_intake_form_submission",
+          "host": [
+            "{{STAFF_API_BASE}}"
+          ],
+          "path": [
+            "intake-form-data",
+            "save_intake_form_submission"
+          ]
+        },
+        "description": "Starts a new submission (`submission_id` null) and stores the returned id as `SUBMISSION_ID`."
+      },
+      "response": []
+    },
+    {
+      "name": "3.4 Get Intake Form Submission",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"request_header\": {\n        \"sender_app_mnemonic\": \"Postman Load Test\",\n        \"sender_app_url\": \"postman\",\n        \"request_id\": \"{{$guid}}\",\n        \"request_timestamp\": \"{{$isoTimestamp}}\"\n    },\n    \"request_body\": {\n        \"pagination_request\": {\n            \"current_page\": 1,\n            \"page_size\": 20,\n            \"sort_by\": \"\",\n            \"filter_by\": \"\",\n            \"search_text\": \"\"\n        },\n        \"request_payload\": {\n            \"submission_id\": \"{{SUBMISSION_ID}}\"\n        }\n    }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{STAFF_API_BASE}}/intake-form-data/get_intake_form_submission",
+          "host": [
+            "{{STAFF_API_BASE}}"
+          ],
+          "path": [
+            "intake-form-data",
+            "get_intake_form_submission"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "3.5 Finalize Intake Form Submission",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"request_header\": {\n        \"sender_app_mnemonic\": \"Postman Load Test\",\n        \"sender_app_url\": \"postman\",\n        \"request_id\": \"{{$guid}}\",\n        \"request_timestamp\": \"{{$isoTimestamp}}\"\n    },\n    \"request_body\": {\n        \"pagination_request\": {\n            \"current_page\": 1,\n            \"page_size\": 20,\n            \"sort_by\": \"\",\n            \"filter_by\": \"\",\n            \"search_text\": \"\"\n        },\n        \"request_payload\": {\n            \"submission_id\": \"{{SUBMISSION_ID}}\"\n        }\n    }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{STAFF_API_BASE}}/intake-form-data/finalize_intake_form_submission",
+          "host": [
+            "{{STAFF_API_BASE}}"
+          ],
+          "path": [
+            "intake-form-data",
+            "finalize_intake_form_submission"
+          ]
+        }
+      },
+      "response": []
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{ACCESS_TOKEN}}",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// staff-api refuses every call without a CSRF double-submit (G2P-AUT-403 \"CSRF token",
+          "// missing or invalid\"): the same value in an X-CSRF-Token cookie and header.",
+          "// Reuse the cookie already in the jar (the server may have set its own), otherwise make one,",
+          "// so the header and the cookie that Postman sends can never disagree.",
+          "if (!pm.request.url.toString().includes('/protocol/openid-connect/')) {",
+          "    const jarValue = pm.cookies.get('X-CSRF-Token');",
+          "    const csrf = jarValue || pm.collectionVariables.get('CSRF_TOKEN') || pm.variables.replaceIn('{{$guid}}');",
+          "    pm.collectionVariables.set('CSRF_TOKEN', csrf);",
+          "    pm.request.headers.upsert({ key: 'X-CSRF-Token', value: csrf });",
+          "    if (!jarValue) {",
+          "        // Cookie header for this request (desktop app / newman); jar entry for the following ones.",
+          "        pm.request.headers.upsert({ key: 'Cookie', value: 'X-CSRF-Token=' + csrf });",
+          "        pm.cookies.jar().set(pm.request.url.toString(), 'X-CSRF-Token', csrf, () => {});",
+          "    }",
+          "}"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Validation failures come back as HTTP 200 with response_status ERROR, so both are checked.",
+          "pm.test('HTTP status is not an error', () => pm.expect(pm.response.code).to.be.below(400));",
+          "let json = {};",
+          "try { json = pm.response.json(); } catch (e) { /* not JSON */ }",
+          "const header = json.response_header;",
+          "if (header) {",
+          "    pm.test('G2P response_status is not ERROR', () => {",
+          "        pm.expect(header.response_status, `${header.response_error_code}: ${header.response_error_message}`).to.not.equal('ERROR');",
+          "    });",
+          "}"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "STAFF_API_BASE",
+      "value": "https://staff-farmer-development.oanstaging.com"
+    },
+    {
+      "key": "KEYCLOAK_BASE",
+      "value": "https://keycloak-development.oanstaging.com"
+    },
+    {
+      "key": "KEYCLOAK_REALM",
+      "value": "staff"
+    },
+    {
+      "key": "OIDC_CLIENT_ID",
+      "value": "farmer-registry-staff-portal"
+    },
+    {
+      "key": "OIDC_CLIENT_SECRET",
+      "value": ""
+    },
+    {
+      "key": "ACCESS_TOKEN",
+      "value": ""
+    },
+    {
+      "key": "CSRF_TOKEN",
+      "value": ""
+    },
+    {
+      "key": "REGISTER_FARMER",
+      "value": "a1a4d25a-1cd4-4356-abac-985a0b3c6bcd"
+    },
+    {
+      "key": "FARMER_INTAKE_FORM_ID",
+      "value": "a1a4d25a-1cd4-4356-abac-8782382649"
+    },
+    {
+      "key": "SEARCH_TEXT",
+      "value": ""
+    },
+    {
+      "key": "CR_TAB_ID",
+      "value": "farmer_farmer_tab"
+    },
+    {
+      "key": "CR_SECTION_ID",
+      "value": "farmer_farmer_personal_identification_section_01"
+    },
+    {
+      "key": "CR_CREATE_PATH",
+      "value": "/change-requests-core-data/create_change_request_for_core_data"
+    },
+    {
+      "key": "INTAKE_REUSE_SUBMISSION",
+      "value": "false"
+    },
+    {
+      "key": "SUBMISSION_ID",
+      "value": ""
+    },
+    {
+      "key": "SUBMISSION_ID_JSON",
+      "value": "null"
+    },
+    {
+      "key": "INTAKE_ESTIMATED_AGE",
+      "value": "36"
+    },
+    {
+      "key": "SUBJECT_INTERNAL_ID",
+      "value": ""
+    },
+    {
+      "key": "TARGET_INTERNAL_ID",
+      "value": ""
+    },
+    {
+      "key": "CR_SECTION_REGISTER_ID",
+      "value": ""
+    }
+  ]
+}

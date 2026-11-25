@@ -1,0 +1,25 @@
+# Build context for docker/sandbox-api/Dockerfile is the repository root.
+# The UI image uses ui/ as its own context (see ui/.dockerignore).
+.git/
+.github/
+ui/
+deployment/
+**/.env
+**/.env.*
+!**/.env.example
+
+# Backend local-only files
+backend/venv/
+backend/.venv/
+**/__pycache__/
+*.py[cod]
+backend/logs/
+backend/uploads/
+backend/keys/
+backend/tests/
+backend/.pytest_cache/
+backend/.ruff_cache/
+backend/.coverage
+backend/htmlcov/
+*.db
+*.sqlite3
