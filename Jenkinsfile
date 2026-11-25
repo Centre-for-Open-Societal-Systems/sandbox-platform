@@ -106,7 +106,7 @@ pipeline {
     CHART_DIR          = 'helm/oan-sandbox'
     // VALUES_FILE, SANDBOX_HOSTNAME and RELEASE depend on the branch: set in Versions
     // (a variable declared here could not be changed there).
-    SSH_HOST           = 'ec2-13-234-239-132.ap-south-1.compute.amazonaws.com'
+    SSH_HOST           = 'ec2-13-207-227-230.ap-south-1.compute.amazonaws.com'
     NAMESPACE          = 'sandbox'
     // Helm in a container for the Chart stage: nothing to install on the agent.
     HELM = "docker run --rm -u 1000:1000 -e HOME=/tmp -v ${WORKSPACE}/helm:/helm:ro alpine/helm:3.16.3"

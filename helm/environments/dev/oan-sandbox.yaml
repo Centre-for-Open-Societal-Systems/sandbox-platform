@@ -1,4 +1,4 @@
-# Values for the oan-sandbox chart (helm/oan-sandbox) on oan_dev (k3s VM 13.234.239.132).
+# Values for the oan-sandbox chart (helm/oan-sandbox) on oan_dev (k3s VM 13.207.227.230).
 # Release `oan-sandbox-1-1794475648`, namespace `sandbox`, APISIX ingress.
 # Taken from oan-helm environments/dev/values/sandbox.yaml; check against the live
 # release before the first upgrade with it:
