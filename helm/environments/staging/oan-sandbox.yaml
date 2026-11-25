@@ -7,14 +7,20 @@
 # Set at install, not here:
 # - api.image.tag / web.image.tag: the Jenkins tag <chart version>-staging.<build number>
 #
-# Before the first install (once, by hand on the QA cluster):
-# - Secret oan-sandbox-secrets in namespace sandbox (keys: see secret in values.yaml).
-# - Database sandbox_db_oan and LOGIN role sandbox (password = DB_PASSWORD of that Secret) on the
-#   shared PostgreSQL of release oan-frappe-common-db (namespace frappe-common).
-# - oan-helm environments/qa/values/oan-namespace-guard.yaml: sandbox in frappe-common.allowFrom,
-#   or the NetworkPolicy drops the API's database connections.
+# The chart makes the rest on install, as oan_a2c_service's does:
+# - Secret oan-sandbox-secrets (secret.create): DB_PASSWORD, JWT_*, APP_CREDENTIAL_ENCRYPTION_KEY
+#   generated once and kept on upgrade.
+# - Database sandbox_db_oan and LOGIN role sandbox on the shared PostgreSQL of release
+#   oan-frappe-common-db (dbInit), with the superuser password deploy-cluster.sh copies from frappe-common.
+#
+# Once, by hand on the QA cluster:
+# - oan-helm environments/qa/values/oan-namespace-guard.yaml applied with sandbox in frappe-common.allowFrom
+#   (oan-helm #281), or the NetworkPolicy drops the API's database connections.
 # - Keycloak realm partner on keycloak.qa.oanstaging.com with the clients of
-#   backend/scripts/keycloak/setup_partner_realm.py; their secrets in oan-sandbox-secrets.
+#   backend/scripts/keycloak/setup_partner_realm.py, and the keys only an operator has, added to the Secret:
+#     kubectl -n sandbox patch secret oan-sandbox-secrets --type merge -p '{"stringData":{
+#       "KEYCLOAK_LOGIN_CLIENT_SECRET":"...","KEYCLOAK_ADMIN_CLIENT_SECRET":"...","GATEWAY_ADMIN_TOKEN":"..."}}'
+#   deploy-cluster.sh stops before helm while one of them is missing.
 
 global:
   hostname: sandbox.qa.oanstaging.com
@@ -63,6 +69,12 @@ config:
 
 secret:
   name: oan-sandbox-secrets
+  create: true
+  # Keys only an operator has (Keycloak, APISIX): deploy-cluster.sh stops before helm while one is missing.
+  operatorKeys: [KEYCLOAK_LOGIN_CLIENT_SECRET, KEYCLOAK_ADMIN_CLIENT_SECRET, GATEWAY_ADMIN_TOKEN]
+
+dbInit:
+  enabled: true
 
 api:
   enabled: true

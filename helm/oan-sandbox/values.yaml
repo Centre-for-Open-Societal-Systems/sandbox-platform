@@ -235,6 +235,27 @@ config:
 # config.partnerManagement.prod.staffApiUrl: PM_PROD_CLIENT_SECRET.
 secret:
   name: ""
+  # true: the chart makes the Secret and generates DB_PASSWORD, JWT_ACCESS_TOKEN_KEY,
+  # JWT_REFRESH_TOKEN_KEY and APP_CREDENTIAL_ENCRYPTION_KEY once (templates/secret.yaml); keys added
+  # later with kubectl patch (Keycloak client secrets, GATEWAY_ADMIN_TOKEN, ...) are kept.
+  # false: bring your own Secret with the keys above.
+  create: false
+  # With create: keys deploy-cluster.sh requires in the Secret before helm runs, e.g.
+  # [KEYCLOAK_LOGIN_CLIENT_SECRET, GATEWAY_ADMIN_TOKEN]. Read by the script, not the chart.
+  operatorKeys: []
+
+# Creates role config.db.user (password DB_PASSWORD of the Secret) and database config.db.name
+# before the API starts, as the PostgreSQL superuser: an init container of the API Pod, idempotent,
+# and it resets the role's password to DB_PASSWORD each time. adminSecret is a Secret in the release
+# namespace holding that superuser's password (deploy-cluster.sh copies oan-frappe-common-db from
+# frappe-common, as oan_a2c_service's deploy-helm-dev.sh does).
+dbInit:
+  enabled: false
+  adminUser: postgres
+  adminSecret: oan-frappe-common-db
+  adminSecretKey: password
+  # The image of the shared PostgreSQL (oan-helm charts/oan-frappe-common): its psql, already on the node.
+  image: bitnamilegacy/postgresql:16.4.0-debian-12-r14
 
 api:
   enabled: false
