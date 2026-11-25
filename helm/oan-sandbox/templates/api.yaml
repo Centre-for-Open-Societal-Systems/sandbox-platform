@@ -1,0 +1,374 @@
+{{- $component := .Values.api -}}
+{{- if $component.enabled }}
+{{- $name := printf "%s-api" .Release.Name -}}
+{{- $config := .Values.config -}}
+{{- $origin := printf "https://%s" (required "global.hostname is required" .Values.global.hostname) -}}
+{{- if and $component.persistence.enabled (not $component.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}-uploads
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: api
+spec:
+  accessModes:
+    - {{ $component.persistence.accessMode }}
+  {{- with $component.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $component.persistence.size }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: api
+spec:
+  replicas: {{ $component.replicas }}
+  # Migrations run on start: never two versions migrating at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: api
+    spec:
+      automountServiceAccountToken: false
+      {{- with $component.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: api
+          image: {{ include "oan.image" $component.image | quote }}
+          imagePullPolicy: {{ $component.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: {{ $component.containerPort }}
+          env:
+            - name: ENV
+              value: {{ $config.appEnv | quote }}
+            - name: DEBUG
+              value: {{ $config.debug | quote }}
+            - name: DEFAULT_COUNTRY_CODE
+              value: {{ $config.defaultCountryCode | quote }}
+            - name: LOG_LEVEL
+              value: {{ $config.logLevel | quote }}
+            - name: DB_HOST
+              value: {{ required "config.db.host is required" $config.db.host | quote }}
+            - name: DB_PORT
+              value: {{ $config.db.port | quote }}
+            - name: DB_NAME
+              value: {{ $config.db.name | quote }}
+            - name: DB_USER
+              value: {{ $config.db.user | quote }}
+            - name: ALLOWED_ORIGINS
+              value: {{ $origin | quote }}
+            - name: PORTAL_URL
+              value: {{ $origin | quote }}
+            - name: UPLOAD_DIR
+              value: /app/uploads
+            - name: LOG_DIR
+              value: /app/logs
+            - name: MAIL_ENABLED
+              value: {{ $config.mail.enabled | quote }}
+            - name: SMTP_HOST
+              value: {{ $config.mail.host | quote }}
+            - name: SMTP_PORT
+              value: {{ $config.mail.port | quote }}
+            - name: SMTP_USER
+              value: {{ $config.mail.user | quote }}
+            - name: SMTP_FROM
+              value: {{ $config.mail.from | quote }}
+            - name: SMTP_TLS
+              value: {{ $config.mail.tls | quote }}
+            - name: DEV_FIXED_OTP
+              value: {{ $config.devFixedOtp | quote }}
+            - name: GATEWAY_ENABLED
+              value: {{ $config.gateway.enabled | quote }}
+            - name: GATEWAY_BASE_URL
+              value: {{ $config.gateway.sandboxUrl | quote }}
+            - name: GATEWAY_UAT_URL
+              value: {{ $config.gateway.uatUrl | quote }}
+            - name: GATEWAY_PROD_URL
+              value: {{ $config.gateway.prodUrl | quote }}
+            - name: GATEWAY_UAT_PUBLIC_URL
+              value: {{ $config.gateway.uatPublicUrl | default "" | quote }}
+            - name: GATEWAY_PROD_PUBLIC_URL
+              value: {{ $config.gateway.prodPublicUrl | default "" | quote }}
+            - name: GATEWAY_SYNC_ENABLED
+              value: {{ $config.gateway.sync.enabled | quote }}
+            - name: GATEWAY_TYPE
+              value: {{ $config.gateway.sync.type | quote }}
+            - name: GATEWAY_ADMIN_URL
+              value: {{ $config.gateway.sync.adminUrl | quote }}
+            - name: GATEWAY_AUTO_PULL_HOURS
+              value: {{ $config.gateway.sync.autoPullHours | default 0 | quote }}
+            {{- $gw := $config.gateway }}
+            {{- $kc := $config.keycloak | default dict }}
+            {{- if eq ($gw.partnerAuth | default "apikey") "oauth" }}
+            {{- if not (and $kc.enabled ($gw.appSync | default dict).enabled) }}
+            {{- fail "config.gateway.partnerAuth=oauth needs config.keycloak.enabled and config.gateway.appSync.enabled" }}
+            {{- end }}
+            {{- end }}
+            - name: GATEWAY_APP_SYNC_ENABLED
+              value: {{ ($gw.appSync | default dict).enabled | default false | quote }}
+            - name: GATEWAY_PARTNER_AUTH
+              value: {{ $gw.partnerAuth | default "apikey" | quote }}
+            - name: GATEWAY_SCOPES
+              value: {{ if $gw.scopes }}{{ $gw.scopes | toJson | quote }}{{ else }}""{{ end }}
+            - name: GATEWAY_TOKEN_AUDIENCE
+              value: {{ $gw.tokenAudience | default "oan-partner-gateway" | quote }}
+            - name: GATEWAY_LEGACY_ROUTE_CLAIM
+              value: {{ if hasKey $gw "legacyRouteClaim" }}{{ $gw.legacyRouteClaim | quote }}{{ else }}"true"{{ end }}
+            - name: GATEWAY_PARTNER_TOKEN_HEADER
+              value: {{ $gw.tokenHeader | default "X-Partner-Token" | quote }}
+            - name: GATEWAY_APP_KEY_HEADER
+              value: {{ $gw.appKeyHeader | default "apikey" | quote }}
+            - name: GATEWAY_PROD_ADMIN_URL
+              value: {{ $gw.prodAdminUrl | default "" | quote }}
+            {{- with $gw.logIngest }}
+            - name: GATEWAY_LOG_INGEST_ENABLED
+              value: {{ .enabled | default false | quote }}
+            - name: GATEWAY_LOG_INGEST_URL
+              value: {{ .url | default "" | quote }}
+            {{- end }}
+            {{- with $gw.rateLimit }}
+            - name: GATEWAY_RATE_LIMIT_ENABLED
+              value: {{ .enabled | default false | quote }}
+            - name: GATEWAY_RATE_LIMIT_POLICY
+              value: {{ .policy | default "local" | quote }}
+            - name: GATEWAY_RATE_LIMIT_REDIS_HOST
+              value: {{ .redisHost | default "" | quote }}
+            - name: GATEWAY_RATE_LIMIT_REDIS_PORT
+              value: {{ .redisPort | default 6379 | quote }}
+            {{- end }}
+            {{- if $kc.enabled }}
+            - name: KEYCLOAK_PROVISIONING_ENABLED
+              value: "true"
+            - name: KEYCLOAK_URL
+              value: {{ required "config.keycloak.url is required" $kc.url | quote }}
+            - name: KEYCLOAK_PUBLIC_URL
+              value: {{ $kc.publicUrl | default "" | quote }}
+            - name: KEYCLOAK_REALM
+              value: {{ $kc.realm | quote }}
+            - name: KEYCLOAK_ADMIN_CLIENT_ID
+              value: {{ $kc.adminClientId | quote }}
+            - name: KEYCLOAK_PARTNER_CLIENT_ID
+              value: {{ $kc.partnerClientId | quote }}
+            - name: KEYCLOAK_ENVIRONMENTS
+              value: {{ $kc.environments | quote }}
+            - name: KEYCLOAK_ISSUER
+              value: {{ $kc.issuer | default "" | quote }}
+            - name: PARTICIPANT_AUTH_PROVIDER
+              value: {{ $kc.participantAuth | default "local" | quote }}
+            - name: KEYCLOAK_LOGIN_CLIENT_ID
+              value: {{ $kc.loginClientId | quote }}
+            {{- with $kc.apps }}
+            - name: KEYCLOAK_APPS_REALM
+              value: {{ .realm | default "" | quote }}
+            - name: KEYCLOAK_APPS_ADMIN_CLIENT_ID
+              value: {{ .adminClientId | default "" | quote }}
+            {{- end }}
+            {{- with $kc.prod }}
+            - name: KEYCLOAK_PROD_URL
+              value: {{ .url | default "" | quote }}
+            - name: KEYCLOAK_PROD_PUBLIC_URL
+              value: {{ .publicUrl | default "" | quote }}
+            - name: KEYCLOAK_PROD_REALM
+              value: {{ .realm | default "" | quote }}
+            - name: KEYCLOAK_PROD_ADMIN_CLIENT_ID
+              value: {{ .adminClientId | default "" | quote }}
+            - name: KEYCLOAK_PROD_JWKS_URL
+              value: {{ .jwksUrl | default "" | quote }}
+            {{- $auth := .clientAuth | default "client-secret" }}
+            {{- if not (has $auth (list "client-secret" "private-key-jwt")) }}
+            {{- fail "config.keycloak.prod.clientAuth must be client-secret or private-key-jwt" }}
+            {{- end }}
+            - name: KEYCLOAK_PROD_CLIENT_AUTH
+              value: {{ $auth | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with $config.partnerPortal }}
+            - name: KEYCLOAK_PORTAL_CLIENT_ID
+              value: {{ .clientId | default "" | quote }}
+            - name: KEYCLOAK_PORTAL_ROLE
+              value: {{ .role | default "PARTNER_OPERATOR" | quote }}
+            - name: KEYCLOAK_PARTNER_ID_ATTRIBUTE
+              value: {{ .partnerIdAttribute | default "partner_id" | quote }}
+            - name: PARTNER_ID_PREFIX
+              value: {{ .partnerIdPrefix | default "oan-p-" | quote }}
+            {{- end }}
+            {{- with $config.partnerManagement }}
+            {{- if .enabled }}
+            - name: PM_PROVISIONING_ENABLED
+              value: "true"
+            - name: PM_STAFF_API_URL
+              value: {{ required "config.partnerManagement.staffApiUrl is required" .staffApiUrl | quote }}
+            - name: PM_TOKEN_URL
+              value: {{ required "config.partnerManagement.tokenUrl is required" .tokenUrl | quote }}
+            - name: PM_CLIENT_ID
+              value: {{ .clientId | quote }}
+            - name: PM_PARTNER_JWKS_BASE_URL
+              value: {{ .jwksBaseUrl | default "" | quote }}
+            - name: PM_DEFAULT_POLICIES
+              value: {{ .defaultPolicies | default "[]" | quote }}
+            - name: PM_AUTO_APPROVE
+              value: {{ if hasKey . "autoApprove" }}{{ .autoApprove | quote }}{{ else }}"true"{{ end }}
+            - name: PM_API_VERSION
+              value: {{ .apiVersion | default "auto" | quote }}
+            - name: PM_PROD_API_VERSION
+              value: {{ (.prod | default dict).apiVersion | default "auto" | quote }}
+            {{- with .prod }}
+            {{- if .staffApiUrl }}
+            - name: PM_PROD_STAFF_API_URL
+              value: {{ .staffApiUrl | quote }}
+            - name: PM_PROD_TOKEN_URL
+              value: {{ required "config.partnerManagement.prod.tokenUrl is required" .tokenUrl | quote }}
+            - name: PM_PROD_CLIENT_ID
+              value: {{ .clientId | default "" | quote }}
+            - name: PM_PROD_PARTNER_JWKS_BASE_URL
+              value: {{ .jwksBaseUrl | default "" | quote }}
+            - name: PM_PROD_DEFAULT_POLICIES
+              value: {{ .defaultPolicies | default "[]" | quote }}
+            - name: PM_PROD_AUTO_APPROVE
+              value: {{ .autoApprove | default false | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- with $config.policies }}
+            - name: POLICY_BACKEND
+              value: {{ .backend | default "auto" | quote }}
+            {{- with .consentManager }}
+            {{- if .apiUrl }}
+            - name: CM_ADMIN_API_URL
+              value: {{ .apiUrl | quote }}
+            - name: CM_ADMIN_TOKEN_URL
+              value: {{ required "config.policies.consentManager.tokenUrl is required" .tokenUrl | quote }}
+            - name: CM_ADMIN_CLIENT_ID
+              value: {{ .clientId | default "oan-sandbox-cm" | quote }}
+            {{- end }}
+            {{- with .prod }}
+            {{- if .apiUrl }}
+            - name: CM_PROD_ADMIN_API_URL
+              value: {{ .apiUrl | quote }}
+            - name: CM_PROD_ADMIN_TOKEN_URL
+              value: {{ required "config.policies.consentManager.prod.tokenUrl is required" .tokenUrl | quote }}
+            - name: CM_PROD_ADMIN_CLIENT_ID
+              value: {{ .clientId | default "" | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- with $config.apps }}
+            - name: MAX_APPS_PER_PARTICIPANT
+              value: {{ .maxPerParticipant | default 10 | quote }}
+            - name: MAX_ACTIVE_CREDENTIALS_PER_APP
+              value: {{ .maxActiveKeys | default 2 | quote }}
+            - name: MAX_ALLOWED_IPS_PER_APP
+              value: {{ .maxAllowedIps | default 20 | quote }}
+            - name: APP_KEY_LIFETIME_DAYS
+              value: {{ .keyLifetimeDays | default 0 | quote }}
+            - name: APP_KEY_ROTATION_GRACE_DAYS
+              value: {{ if hasKey . "keyRotationGraceDays" }}{{ .keyRotationGraceDays | quote }}{{ else }}"7"{{ end }}
+            - name: APP_KEY_EXPIRY_WARN_DAYS
+              value: {{ if hasKey . "keyExpiryWarnDays" }}{{ .keyExpiryWarnDays | quote }}{{ else }}"14"{{ end }}
+            - name: APP_KEY_MAINTENANCE_MINUTES
+              value: {{ if hasKey . "keyMaintenanceMinutes" }}{{ .keyMaintenanceMinutes | quote }}{{ else }}"60"{{ end }}
+            {{- end }}
+            {{- with $config.support }}
+            - name: SUPPORT_SLA_HOURS
+              value: {{ if hasKey . "slaHours" }}{{ .slaHours | quote }}{{ else }}"72"{{ end }}
+            {{- end }}
+            {{- with $config.audit }}
+            - name: AUDIT_LOG_RETENTION_DAYS
+              value: {{ .retentionDays | default 0 | quote }}
+            {{- end }}
+            - name: SEED_ADMIN_EMAIL
+              value: {{ $config.seed.adminEmail | quote }}
+            {{- with $component.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ required "secret.name is required: an existing Secret with DB_PASSWORD, JWT_ACCESS_TOKEN_KEY and JWT_REFRESH_TOKEN_KEY" .Values.secret.name | quote }}
+            {{- with $component.envFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: uploads
+              mountPath: /app/uploads
+            - name: logs
+              mountPath: /app/logs
+          resources:
+            {{- toYaml $component.resources | nindent 12 }}
+          startupProbe:
+            httpGet:
+              path: /oan/health
+              port: http
+            failureThreshold: 60
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /oan/health
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /oan/health
+              port: http
+            initialDelaySeconds: 30
+      volumes:
+        - name: uploads
+          {{- if $component.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ $component.persistence.existingClaim | default (printf "%s-uploads" $name) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: logs
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: api
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: api
+  ports:
+    - name: http
+      port: {{ $component.servicePort }}
+      targetPort: http
+{{- end }}

@@ -1,0 +1,305 @@
+# Defaults for the OAN Sandbox (sandbox-platform): public site with the API catalogue,
+# participant portal (sign-up, environment access, try-it console, API history) and
+# admin console. Per-environment values live in ../environments/<env>/oan-sandbox.yaml.
+#
+# Set at install, not here:
+# - api.image / web.image: the Jenkins images eoan/sandbox-platform/oan-sandbox-{api,web}
+#   tagged <chart version>-<build number> (docker/sandbox-api/Dockerfile, ui/Dockerfile)
+# - secret.name: an existing namespace-local Secret; secrets never go in Git.
+#
+# Both workloads stay disabled until an image is configured.
+
+global:
+  # Public host for the web app; the API is served on the same host under /oan.
+  hostname: sandbox.development.oanstaging.com
+
+# Non-secret API settings (environment variables of the api container).
+config:
+  # sandbox | uat | production. production also turns off any fixed sign-up code.
+  appEnv: sandbox
+  defaultCountryCode: ET
+  logLevel: INFO
+  # true exposes Swagger at /docs on the API; keep false on shared environments.
+  debug: false
+  db:
+    host: commons-postgresql.commons.svc.cluster.local
+    port: 5432
+    name: sandbox_db_oan
+    user: sandbox
+  mail:
+    enabled: false
+    host: ""
+    port: 587
+    user: ""
+    from: no-reply@openagrinet.org
+    tls: true
+  # Sign-up code used while mail is off. Empty: random codes only (keep empty on
+  # shared environments, or anyone can register any email).
+  devFixedOtp: ""
+  # Try-it calls for products "served through the API gateway" go to this proxy.
+  gateway:
+    enabled: true
+    # Fallback proxy for an environment without its own URL (GATEWAY_BASE_URL).
+    sandboxUrl: ""
+    uatUrl: ""
+    prodUrl: ""
+    # The same gateway as partners reach it (Postman, their own code): shown in
+    # code samples, the try-it request URL and API history. Set when the URLs
+    # above are cluster-internal (e.g. http://apisix-gateway.apisix:9080).
+    # Empty = the URL above.
+    uatPublicUrl: ""
+    prodPublicUrl: ""
+    # Gateway Admin API (APISIX). Key in the Secret: GATEWAY_ADMIN_TOKEN.
+    sync:
+      # "Pull from gateway" in the console (reads routes; a viewer key is enough).
+      enabled: false
+      # apisix | kong
+      type: apisix
+      adminUrl: ""
+      # With sync.enabled: the API pulls every gateway on its own this often (hours).
+      # New routes reach the catalogue unpublished; apps whose route ids changed are
+      # re-synced. 0 = only the console's button.
+      autoPullHours: 24
+    # Participant apps (API key + secret per app). appSync: apikey / keycloak mode write
+    # every app to the APISIX Admin API as a consumer (GATEWAY_ADMIN_TOKEN = admin key);
+    # oauth mode only reads the routes (viewer key) and writes nothing to the gateway.
+    appSync:
+      enabled: false
+    # What the gateway checks: apikey | keycloak | oauth. oauth (OAuth 2.0 client
+    # credentials): every app key is also a Keycloak client in keycloak.realm; the
+    # partner sends only the app's access token in tokenHeader. Needs keycloak.enabled
+    # and appSync.enabled, and the partner routes of chart oan-partner-gateway
+    # (sandbox-platform deploy/apisix-partner-gateway) on the gateway.
+    partnerAuth: apikey
+    # OAuth scopes of the partner APIs (the contract with chart oan-partner-gateway):
+    # "/<gateway path prefix>" or "METHOD /<path>" -> scope; the longest match wins. An
+    # app's token gets the scopes of its approved API products' end-points (Keycloak
+    # client scopes, standard `scope` claim). Empty = no scopes (route ids only, as before).
+    # Must match the scopes the partner gateway chart requires, e.g.
+    #   "/consent-manager-partner": "oan:consent-manager-partner"
+    scopes: {}
+    # aud of every app token; the partner gateway chart's keycloak.audience checks it.
+    tokenAudience: oan-partner-gateway
+    # During the move to scopes, tokens still carry oan_routes (route ids). false once the
+    # partner gateway runs with legacyRouteIds: false.
+    legacyRouteClaim: true
+    tokenHeader: X-Partner-Token
+    appKeyHeader: apikey
+    # Calls made outside the sandbox (Postman, partner servers) in API history: APISIX
+    # http-logger posts them to <ingestUrl>. Token in the Secret: GATEWAY_LOG_INGEST_TOKEN.
+    logIngest:
+      enabled: false
+      # The API as APISIX reaches it, e.g. https://<global.hostname>/oan/internal/gateway/logs
+      url: ""
+    # Production's own APISIX Admin API (key in the Secret: GATEWAY_PROD_ADMIN_TOKEN).
+    # Empty = production apps are handled like UAT ones (one gateway). Used with prodUrl.
+    prodAdminUrl: ""
+    # Per-product rate limits on app consumers (limit-count).
+    rateLimit:
+      enabled: false
+      # local | redis
+      policy: local
+      redisHost: ""
+      redisPort: 6379
+  # Participants as Keycloak users; app keys as Keycloak clients (partnerAuth oauth).
+  # Clients and attribute are made once with backend/scripts/keycloak/setup_partner_realm.py;
+  # its two client secrets go in the Secret: KEYCLOAK_ADMIN_CLIENT_SECRET, KEYCLOAK_LOGIN_CLIENT_SECRET.
+  keycloak:
+    enabled: false
+    # Keycloak as the API reaches it.
+    url: ""
+    # Keycloak as partners reach it (token URL shown in the portal); empty = url.
+    publicUrl: ""
+    realm: partner
+    adminClientId: oan-sandbox-provisioner
+    partnerClientId: oan-partner-api
+    environments: UAT,PRODUCTION
+    # iss of the realm's tokens; empty = <publicUrl or url>/realms/<realm>.
+    issuer: ""
+    # Portal sign-in: local (sandbox password) | keycloak (Keycloak checks the password).
+    participantAuth: local
+    loginClientId: oan-sandbox-portal
+    # The sandbox apps' own realm on this Keycloak (partnerAuth oauth): every app key's
+    # OAuth client, its oan: scopes and tokens live there, apart from `realm` above, which
+    # keeps the partners' users (portal sign-in, the CM partner portal). The partner
+    # gateway's keycloak.issuer must be <publicUrl>/realms/<apps.realm>. Made with
+    # backend/scripts/keycloak/setup_app_realm.py; with realm set the Secret needs
+    # KEYCLOAK_APPS_ADMIN_CLIENT_SECRET. Empty realm = app clients stay in `realm`.
+    apps:
+      realm: ""
+      adminClientId: oan-sandbox-app-provisioner
+    # Production's own Keycloak (each cluster has one). All optional: empty = production
+    # apps use the Keycloak above (still with their own keys). With url set, the Secret
+    # needs KEYCLOAK_PROD_ADMIN_CLIENT_SECRET (that Keycloak's oan-sandbox-provisioner).
+    # Participants and the portal sign-in always stay on the main Keycloak.
+    prod:
+      url: ""
+      publicUrl: ""
+      # Empty = realm / adminClientId above.
+      realm: ""
+      adminClientId: ""
+      # Empty = <url>/realms/<realm>/protocol/openid-connect/certs.
+      jwksUrl: ""
+      # How production app clients authenticate to Keycloak: client-secret (API key +
+      # secret) | private-key-jwt (RFC 7523: the partner signs a client assertion with the
+      # key registered in its production request; the secret is not accepted, and the
+      # portal cannot fetch production tokens for try-it).
+      clientAuth: client-secret
+  # OpenG2P Consent Manager partner portal: an approved participant gets the portal
+  # client's role and a partner_id attribute in keycloak.realm. Empty clientId = off.
+  partnerPortal:
+    clientId: ""
+    role: PARTNER_OPERATOR
+    partnerIdAttribute: partner_id
+    # Never change once partners exist: it is their ID in the CM and PM.
+    partnerIdPrefix: oan-p-
+  # OpenG2P Partner Management: approved participants onboarded as partners.
+  # Secret key: PM_CLIENT_SECRET.
+  partnerManagement:
+    enabled: false
+    staffApiUrl: ""
+    tokenUrl: ""
+    clientId: oan-sandbox-pm
+    # This API as PM reaches it (partner JWKS), e.g. https://<global.hostname>/oan
+    jwksBaseUrl: ""
+    defaultPolicies: "[]"
+    # The sandbox approves its own onboarding requests here. false: they wait for PM's
+    # staff (maker-checker) and the sandbox shows "Awaiting PM approval" until then.
+    autoApprove: true
+    # PM release (sandbox-platform backend/app/integrations/openg2p_contract.py): auto | 1.0 |
+    # develop. COSS deploys 1.0 (partner-management chart 1.0.2/1.0.3): a key is needed to
+    # onboard, keys are copied, no policies.
+    apiVersion: auto
+    # Production's own PM (one per cluster). Empty staffApiUrl = none. A participant is
+    # onboarded there when production access is approved (JWKS
+    # <jwksBaseUrl>/partners/<id>/production/jwks.json) and disabled when it goes. The
+    # Secret needs PM_PROD_CLIENT_SECRET.
+    prod:
+      staffApiUrl: ""
+      tokenUrl: ""
+      # Empty = clientId above.
+      clientId: ""
+      # Empty = jwksBaseUrl above.
+      jwksBaseUrl: ""
+      defaultPolicies: "[]"
+      # Off: production PM's staff approve production partners (maker-checker).
+      autoApprove: false
+      apiVersion: auto
+  # Where API products' data policies are filed (docs/OPENG2P_INTEGRATION.md in
+  # sandbox-platform): auto (PM if its release has policies, else the Consent Manager) |
+  # pm | cm | none. COSS today keeps policies in the Consent Manager.
+  policies:
+    backend: auto
+    # COSS Consent Manager staff API (policy bindings); the sandbox's service account
+    # needs CONSENT_MANAGER_ADMIN. Secret: CM_ADMIN_CLIENT_SECRET (CM_PROD_ADMIN_CLIENT_SECRET).
+    consentManager:
+      apiUrl: ""
+      tokenUrl: ""
+      clientId: oan-sandbox-cm
+      prod:
+        apiUrl: ""
+        tokenUrl: ""
+        clientId: ""
+  # Participant apps: limits and the life of API keys.
+  apps:
+    maxPerParticipant: 10
+    maxActiveKeys: 2
+    maxAllowedIps: 20
+    # Days a key lives from issue; 0 = keys never expire.
+    keyLifetimeDays: 0
+    # Days a rotated key keeps working so the partner can switch over (0 = revoked at once).
+    keyRotationGraceDays: 7
+    # Owners get an email this many days before a key expires.
+    keyExpiryWarnDays: 14
+    # How often the API expires old keys and sends those warnings; 0 = never.
+    keyMaintenanceMinutes: 60
+  support:
+    # Hours to answer a support query before the console shows it overdue; 0 = no SLA.
+    slaHours: 72
+  audit:
+    # Audit entries ("User tracking") older than this many days are deleted; 0 = keep forever.
+    retentionDays: 0
+  # Only used on an empty database: creates the master administrator, masters
+  # and CMS content when the Secret holds SEED_ADMIN_PASSWORD (idempotent).
+  seed:
+    adminEmail: ""
+
+# Existing Secret in the release namespace, loaded into the api container.
+# Required keys: DB_PASSWORD, JWT_ACCESS_TOKEN_KEY, JWT_REFRESH_TOKEN_KEY.
+# Required with participant apps: APP_CREDENTIAL_ENCRYPTION_KEY (Fernet key; never change it).
+# Optional keys: SMTP_PASSWORD, GATEWAY_ADMIN_TOKEN, SEED_ADMIN_PASSWORD,
+# KEYCLOAK_ADMIN_CLIENT_SECRET, KEYCLOAK_LOGIN_CLIENT_SECRET, GATEWAY_LOG_INGEST_TOKEN,
+# GATEWAY_RATE_LIMIT_REDIS_PASSWORD, PM_CLIENT_SECRET, and, only with config.keycloak.prod /
+# config.gateway.prodAdminUrl: KEYCLOAK_PROD_ADMIN_CLIENT_SECRET, GATEWAY_PROD_ADMIN_TOKEN; with
+# config.keycloak.apps.realm: KEYCLOAK_APPS_ADMIN_CLIENT_SECRET; with
+# config.partnerManagement.prod.staffApiUrl: PM_PROD_CLIENT_SECRET.
+secret:
+  name: ""
+
+api:
+  enabled: false
+  image:
+    repository: ""
+    tag: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+  imagePullSecrets: []
+  # The container applies database migrations on start; keep one replica per
+  # rollout unless migrations are run separately.
+  replicas: 1
+  containerPort: 8000
+  servicePort: 80
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  # Participant ID proofs, certificates, product icons and documents.
+  persistence:
+    enabled: true
+    existingClaim: ""
+    storageClass: ""
+    accessMode: ReadWriteOnce
+    size: 5Gi
+  env: []
+  envFrom: []
+
+web:
+  enabled: false
+  # The browser API URL (https://<global.hostname>/oan) is built into this image
+  # (build argument NEXT_PUBLIC_API_BASE_URL): build one web image per environment.
+  image:
+    repository: ""
+    tag: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+  imagePullSecrets: []
+  replicas: 1
+  containerPort: 3000
+  servicePort: 80
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  env: []
+  envFrom: []
+
+# Istio route: /oan to the API, everything else to the web app.
+virtualService:
+  enabled: false
+  gateway: istio-system/development
+
+# Kubernetes Ingress (no Istio): /oan to the API, everything else to the web app.
+# On oan_dev (k3s) the only IngressClass is apisix and it is not the default one.
+ingress:
+  enabled: false
+  className: ""
+  # Empty = the release name (what deployment/jenkins/deploy.sh created with kubectl).
+  name: ""
+  annotations: {}
+  # The *.development.oanstaging.com certificate is served by the controller; set this
+  # only to name a TLS Secret in the release namespace.
+  tls: []

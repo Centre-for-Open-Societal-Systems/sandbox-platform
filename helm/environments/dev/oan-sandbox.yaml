@@ -1,0 +1,116 @@
+# Values for the oan-sandbox chart (helm/oan-sandbox) on oan_dev (k3s VM 13.207.227.230).
+# Release `oan-sandbox-1-1794475648`, namespace `sandbox`, APISIX ingress.
+# Taken from oan-helm environments/dev/values/sandbox.yaml; check against the live
+# release before the first upgrade with it:
+#   helm -n sandbox get values oan-sandbox-1-1794475648
+#
+# Set at install, not here:
+# - api.image.tag / web.image.tag: the Jenkins tag <chart version>-<build number>
+# - secret.name: the existing Secret in namespace sandbox (DB_PASSWORD, JWT_*; see values.yaml)
+
+global:
+  hostname: sandbox.development.oanstaging.com
+
+config:
+  appEnv: sandbox
+  debug: false
+  db:
+    # The database the release ran on before the chart moved here (revision 8).
+    host: oan-frappe-common-db-postgresql-subchart.frappe-common.svc.cluster.local
+    port: 5432
+    name: sandbox_db_oan
+    user: sandbox
+  gateway:
+    enabled: true
+    # Dev APISIX on oan_dev, partner routes of chart oan-partner-gateway (deploy/apisix-partner-gateway).
+    # Served under the *.development.oanstaging.com wildcard (DNS and certificate).
+    uatUrl: https://partner-api.development.oanstaging.com
+    sync:
+      # oauth only reads the routes: GATEWAY_ADMIN_TOKEN in the Secret is the viewer key
+      # (Secret apisix-admin-credentials, key viewer, namespace apisix).
+      # Dev APISIX's own Admin Service on oan_dev (release apisix, namespace apisix; not
+      # staging's https://apisix-admin.oanstaging.com, which this cluster cannot reach).
+      # The Admin API admits by source IP: the API Pod comes from the k3s Pod CIDR
+      # (10.42.0.0/16), which the 10.0.0.0/8 entry of apisix.admin.allow in oan-helm
+      # environments/dev/values/apisix.yaml covers.
+      enabled: true
+      type: apisix
+      adminUrl: http://apisix-admin.apisix.svc.cluster.local:9180
+      # Pull the routes on its own once a day (new routes arrive unpublished in the catalogue).
+      autoPullHours: 24
+    appSync:
+      enabled: true
+    # Partners call with an app access token (client credentials), not the API key.
+    partnerAuth: oauth
+    tokenHeader: X-Partner-Token
+    # Scopes the oan-partner-gateway routes require (the same names as that chart's
+    # values; oan-helm environments/dev/values/sandbox.yaml, chart 1.0.0-dev.20).
+    scopes:
+      /consent-manager: oan:consent-manager-portal
+      /consent-manager-partner: oan:consent-manager-partner
+      /partner-management-keys: oan:partner-management-keys
+      /aggregation-layer: oan:aggregation-layer
+    tokenAudience: oan-partner-gateway
+    # Tokens keep carrying oan_routes (route ids) until the partner gateway runs with
+    # legacyRouteIds: false.
+    legacyRouteClaim: true
+    logIngest:
+      enabled: false
+    rateLimit:
+      enabled: false
+  # Needs KEYCLOAK_LOGIN_CLIENT_SECRET (oan-sandbox-portal) and
+  # KEYCLOAK_ADMIN_CLIENT_SECRET (oan-sandbox-provisioner) in oan-sandbox-secrets:
+  # without the login secret the API refuses to start.
+  keycloak:
+    enabled: true
+    url: https://keycloak.development.oanstaging.com
+    publicUrl: https://keycloak.development.oanstaging.com
+    # Set up on 2026-11-05 with setup_partner_realm.py: oan-partner-api,
+    # oan-sandbox-provisioner, oan-sandbox-portal, attribute participant_uid.
+    realm: partner
+    participantAuth: keycloak
+    # Sandbox apps' own realm. Empty = app clients stay in `realm` (as today). To use one:
+    # run setup_app_realm.py on the dev Keycloak, add KEYCLOAK_APPS_ADMIN_CLIENT_SECRET to
+    # the Secret, set realm: partner-sandbox-app, then Apps & Keys > Re-sync all.
+    apps:
+      realm: ""
+      adminClientId: oan-sandbox-app-provisioner
+  # Consent Manager partner portal: off until its client is confirmed in the realm.
+  partnerPortal:
+    clientId: ""
+  partnerManagement:
+    enabled: false
+    # Dev's commons-services deploys PM chart 1.0.2 (release 1.0: a key is needed to onboard,
+    # no policies). Set "develop" (or auto) once the new PM is installed.
+    apiVersion: "1.0"
+  # Data policies of API products: COSS keeps them in the Consent Manager today. Empty
+  # apiUrl = no policies filed.
+  policies:
+    backend: auto
+    consentManager:
+      apiUrl: ""
+      tokenUrl: ""
+
+api:
+  enabled: true
+  image:
+    # Jenkinsfile ECR_REPO_PREFIX + "-api". The node pulls with the instance role
+    # oan-services-dev-ecr-pull (k3s ecr-credential-provider), so no pull Secret.
+    repository: 379220350808.dkr.ecr.ap-south-1.amazonaws.com/eoan/sandbox-platform/oan-sandbox-api
+  imagePullSecrets: []
+
+web:
+  enabled: true
+  image:
+    # Built with NEXT_PUBLIC_API_BASE_URL=https://sandbox.development.oanstaging.com/oan.
+    repository: 379220350808.dkr.ecr.ap-south-1.amazonaws.com/eoan/sandbox-platform/oan-sandbox-web
+  imagePullSecrets: []
+
+# No Istio on oan_dev: APISIX serves the host through a plain Ingress.
+virtualService:
+  enabled: false
+
+ingress:
+  enabled: true
+  # The only IngressClass on oan_dev and not the default one: without it no controller serves the host.
+  className: apisix

@@ -1,0 +1,26 @@
+apiVersion: v2
+name: oan-sandbox
+description: OAN Sandbox for OpenAgriNet (OAN); developer portal with the API catalogue,
+  participant portal, try-it console and admin console. Deploys the sandbox API (FastAPI)
+  and web app (Next.js) built from this repository.
+type: application
+version: 1.0.0-dev.20
+appVersion: develop
+keywords:
+- oan
+- openagrinet
+- sandbox
+- developer-portal
+home: https://github.com/Centre-for-Open-Societal-Systems/sandbox-platform
+sources:
+- https://github.com/Centre-for-Open-Societal-Systems/sandbox-platform
+- https://github.com/Centre-for-Open-Societal-Systems/oan-helm
+maintainers:
+- name: OpenAgriNet (OAN)
+  url: https://github.com/Centre-for-Open-Societal-Systems/oan-helm
+annotations:
+  catalog.cattle.io/display-name: OAN Sandbox
+  oan.org/owner: OpenAgriNet (OAN)
+  oan.org/application-source: https://github.com/Centre-for-Open-Societal-Systems/sandbox-platform
+  oan.org/chart-source: https://github.com/Centre-for-Open-Societal-Systems/sandbox-platform/tree/develop/helm/oan-sandbox
+  org.opencontainers.image.source: https://github.com/Centre-for-Open-Societal-Systems/sandbox-platform

@@ -1,0 +1,53 @@
+{{- /*
+Kubernetes Ingress for clusters without Istio (e.g. the oan_dev k3s VM with APISIX):
+/oan to the API, everything else to the web app, on global.hostname.
+Replaces the Ingress that deployment/jenkins/deploy.sh used to apply with kubectl.
+*/ -}}
+{{- if .Values.ingress.enabled }}
+{{- if not (and .Values.api.enabled .Values.web.enabled) }}
+{{- fail "ingress.enabled requires api.enabled and web.enabled" }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Values.ingress.name | default .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  annotations:
+    # A rollback to a revision without this Ingress (one deployed with the oan-helm
+    # chart, before the Ingress moved into this chart) must not delete it: that
+    # would take the whole host offline.
+    helm.sh/resource-policy: keep
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ required "global.hostname is required" .Values.global.hostname | quote }}
+      http:
+        paths:
+          # Prefix, not ImplementationSpecific: APISIX treats the latter as an exact match.
+          - path: /oan
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ printf "%s-api" .Release.Name }}
+                port:
+                  number: {{ .Values.api.servicePort }}
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ printf "%s-web" .Release.Name }}
+                port:
+                  number: {{ .Values.web.servicePort }}
+{{- end }}

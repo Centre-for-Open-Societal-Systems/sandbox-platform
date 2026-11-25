@@ -1,0 +1,35 @@
+{{- if .Values.virtualService.enabled }}
+{{- if not (and .Values.api.enabled .Values.web.enabled) }}
+{{- fail "virtualService.enabled requires api.enabled and web.enabled" }}
+{{- end }}
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  hosts:
+    - {{ required "global.hostname is required" .Values.global.hostname | quote }}
+  gateways:
+    - {{ required "virtualService.gateway is required" .Values.virtualService.gateway | quote }}
+  http:
+    # The browser calls the API on the same host: https://<hostname>/oan/...
+    - match:
+        - uri:
+            prefix: /oan/
+        - uri:
+            exact: /oan
+      route:
+        - destination:
+            host: {{ printf "%s-api" .Release.Name }}
+            port:
+              number: {{ .Values.api.servicePort }}
+    - route:
+        - destination:
+            host: {{ printf "%s-web" .Release.Name }}
+            port:
+              number: {{ .Values.web.servicePort }}
+{{- end }}
