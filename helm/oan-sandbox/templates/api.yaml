@@ -126,6 +126,8 @@ spec:
               value: {{ $config.gateway.sync.type | quote }}
             - name: GATEWAY_ADMIN_URL
               value: {{ $config.gateway.sync.adminUrl | quote }}
+            - name: GATEWAY_AUTO_PULL_HOURS
+              value: {{ $config.gateway.sync.autoPullHours | default 0 | quote }}
             {{- $gw := $config.gateway }}
             {{- $kc := $config.keycloak | default dict }}
             {{- if eq ($gw.partnerAuth | default "apikey") "oauth" }}
@@ -137,6 +139,12 @@ spec:
               value: {{ ($gw.appSync | default dict).enabled | default false | quote }}
             - name: GATEWAY_PARTNER_AUTH
               value: {{ $gw.partnerAuth | default "apikey" | quote }}
+            - name: GATEWAY_SCOPES
+              value: {{ if $gw.scopes }}{{ $gw.scopes | toJson | quote }}{{ else }}""{{ end }}
+            - name: GATEWAY_TOKEN_AUDIENCE
+              value: {{ $gw.tokenAudience | default "oan-partner-gateway" | quote }}
+            - name: GATEWAY_LEGACY_ROUTE_CLAIM
+              value: {{ if hasKey $gw "legacyRouteClaim" }}{{ $gw.legacyRouteClaim | quote }}{{ else }}"true"{{ end }}
             - name: GATEWAY_PARTNER_TOKEN_HEADER
               value: {{ $gw.tokenHeader | default "X-Partner-Token" | quote }}
             - name: GATEWAY_APP_KEY_HEADER
@@ -180,6 +188,12 @@ spec:
               value: {{ $kc.participantAuth | default "local" | quote }}
             - name: KEYCLOAK_LOGIN_CLIENT_ID
               value: {{ $kc.loginClientId | quote }}
+            {{- with $kc.apps }}
+            - name: KEYCLOAK_APPS_REALM
+              value: {{ .realm | default "" | quote }}
+            - name: KEYCLOAK_APPS_ADMIN_CLIENT_ID
+              value: {{ .adminClientId | default "" | quote }}
+            {{- end }}
             {{- with $kc.prod }}
             - name: KEYCLOAK_PROD_URL
               value: {{ .url | default "" | quote }}
@@ -191,6 +205,12 @@ spec:
               value: {{ .adminClientId | default "" | quote }}
             - name: KEYCLOAK_PROD_JWKS_URL
               value: {{ .jwksUrl | default "" | quote }}
+            {{- $auth := .clientAuth | default "client-secret" }}
+            {{- if not (has $auth (list "client-secret" "private-key-jwt")) }}
+            {{- fail "config.keycloak.prod.clientAuth must be client-secret or private-key-jwt" }}
+            {{- end }}
+            - name: KEYCLOAK_PROD_CLIENT_AUTH
+              value: {{ $auth | quote }}
             {{- end }}
             {{- end }}
             {{- with $config.partnerPortal }}
@@ -217,6 +237,52 @@ spec:
               value: {{ .jwksBaseUrl | default "" | quote }}
             - name: PM_DEFAULT_POLICIES
               value: {{ .defaultPolicies | default "[]" | quote }}
+            - name: PM_AUTO_APPROVE
+              value: {{ if hasKey . "autoApprove" }}{{ .autoApprove | quote }}{{ else }}"true"{{ end }}
+            - name: PM_API_VERSION
+              value: {{ .apiVersion | default "auto" | quote }}
+            - name: PM_PROD_API_VERSION
+              value: {{ (.prod | default dict).apiVersion | default "auto" | quote }}
+            {{- with .prod }}
+            {{- if .staffApiUrl }}
+            - name: PM_PROD_STAFF_API_URL
+              value: {{ .staffApiUrl | quote }}
+            - name: PM_PROD_TOKEN_URL
+              value: {{ required "config.partnerManagement.prod.tokenUrl is required" .tokenUrl | quote }}
+            - name: PM_PROD_CLIENT_ID
+              value: {{ .clientId | default "" | quote }}
+            - name: PM_PROD_PARTNER_JWKS_BASE_URL
+              value: {{ .jwksBaseUrl | default "" | quote }}
+            - name: PM_PROD_DEFAULT_POLICIES
+              value: {{ .defaultPolicies | default "[]" | quote }}
+            - name: PM_PROD_AUTO_APPROVE
+              value: {{ .autoApprove | default false | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- with $config.policies }}
+            - name: POLICY_BACKEND
+              value: {{ .backend | default "auto" | quote }}
+            {{- with .consentManager }}
+            {{- if .apiUrl }}
+            - name: CM_ADMIN_API_URL
+              value: {{ .apiUrl | quote }}
+            - name: CM_ADMIN_TOKEN_URL
+              value: {{ required "config.policies.consentManager.tokenUrl is required" .tokenUrl | quote }}
+            - name: CM_ADMIN_CLIENT_ID
+              value: {{ .clientId | default "oan-sandbox-cm" | quote }}
+            {{- end }}
+            {{- with .prod }}
+            {{- if .apiUrl }}
+            - name: CM_PROD_ADMIN_API_URL
+              value: {{ .apiUrl | quote }}
+            - name: CM_PROD_ADMIN_TOKEN_URL
+              value: {{ required "config.policies.consentManager.prod.tokenUrl is required" .tokenUrl | quote }}
+            - name: CM_PROD_ADMIN_CLIENT_ID
+              value: {{ .clientId | default "" | quote }}
+            {{- end }}
+            {{- end }}
             {{- end }}
             {{- end }}
             {{- with $config.apps }}

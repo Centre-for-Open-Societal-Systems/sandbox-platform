@@ -4,7 +4,7 @@ description: OAN Sandbox for OpenAgriNet (OAN); developer portal with the API ca
   participant portal, try-it console and admin console. Deploys the sandbox API (FastAPI)
   and web app (Next.js) built from this repository.
 type: application
-version: 1.0.0-dev.19
+version: 1.0.0-dev.20
 appVersion: develop
 keywords:
 - oan
