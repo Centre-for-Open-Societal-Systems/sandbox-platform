@@ -1,0 +1,91 @@
+# Values for the oan-sandbox chart (helm/oan-sandbox) on the QA cluster (qa.oanstaging.com), the staging
+# environment: one RKE2 node, APISIX the only edge (oan-helm docs/qa-cluster.md). Installed by the Jenkins
+# stage "staging → QA cluster (helm)" (deployment/jenkins/deploy-cluster.sh with the oan-qa-kubeconfig
+# credential), the same way oan_a2c_service deploys its staging branch.
+# Release `oan-sandbox`, namespace `sandbox`.
+#
+# Set at install, not here:
+# - api.image.tag / web.image.tag: the Jenkins tag <chart version>-staging.<build number>
+#
+# Before the first install (once, by hand on the QA cluster):
+# - Secret oan-sandbox-secrets in namespace sandbox (keys: see secret in values.yaml).
+# - Database sandbox_db_oan and LOGIN role sandbox (password = DB_PASSWORD of that Secret) on the
+#   shared PostgreSQL of release oan-frappe-common-db (namespace frappe-common).
+# - oan-helm environments/qa/values/oan-namespace-guard.yaml: sandbox in frappe-common.allowFrom,
+#   or the NetworkPolicy drops the API's database connections.
+# - Keycloak realm partner on keycloak.qa.oanstaging.com with the clients of
+#   backend/scripts/keycloak/setup_partner_realm.py; their secrets in oan-sandbox-secrets.
+
+global:
+  hostname: sandbox.qa.oanstaging.com
+
+config:
+  appEnv: sandbox
+  debug: false
+  db:
+    # The shared PostgreSQL of QA (oan-helm environments/qa/values/oan-frappe-common.yaml), as for a2c.
+    host: oan-frappe-common-db-postgresql-subchart.frappe-common.svc.cluster.local
+    port: 5432
+    name: sandbox_db_oan
+    user: sandbox
+  gateway:
+    enabled: true
+    # QA APISIX (release apisix, namespace api6-gateway): partner routes of chart oan-partner-gateway
+    # (deploy/apisix-partner-gateway), served under the *.qa.oanstaging.com wildcard.
+    uatUrl: https://partner-api.qa.oanstaging.com
+    sync:
+      # oauth only reads the routes: GATEWAY_ADMIN_TOKEN in the Secret is the APISIX viewer key.
+      # The Admin API admits by source IP: the API Pod comes from the RKE2 Pod CIDR (10.42.0.0/16).
+      enabled: true
+      type: apisix
+      adminUrl: http://apisix-admin.api6-gateway.svc.cluster.local:9180
+    appSync:
+      enabled: true
+    # Partners call with an app access token (client credentials), not the API key.
+    partnerAuth: oauth
+    tokenHeader: X-Partner-Token
+    logIngest:
+      enabled: false
+    rateLimit:
+      enabled: false
+  # Needs KEYCLOAK_LOGIN_CLIENT_SECRET (oan-sandbox-portal) and KEYCLOAK_ADMIN_CLIENT_SECRET
+  # (oan-sandbox-provisioner) in oan-sandbox-secrets: without the login secret the API refuses to start.
+  keycloak:
+    enabled: true
+    url: https://keycloak.qa.oanstaging.com
+    publicUrl: https://keycloak.qa.oanstaging.com
+    realm: partner
+    participantAuth: keycloak
+  partnerPortal:
+    clientId: ""
+  partnerManagement:
+    enabled: false
+
+secret:
+  name: oan-sandbox-secrets
+
+api:
+  enabled: true
+  image:
+    # Jenkinsfile ECR_REPO_PREFIX + "-api". No pull Secret on QA: the node pulls from ECR with its
+    # IAM role (kubelet ecr-credential-provider), which needs pull access to eoan/sandbox-platform/*.
+    repository: 379220350808.dkr.ecr.ap-south-1.amazonaws.com/eoan/sandbox-platform/oan-sandbox-api
+  imagePullSecrets: []
+  persistence:
+    # Named, as for the other QA releases (the NFS CSI driver of the node).
+    storageClass: nfs-csi
+
+web:
+  enabled: true
+  image:
+    # Built by the staging branch with NEXT_PUBLIC_API_BASE_URL=https://sandbox.qa.oanstaging.com/oan.
+    repository: 379220350808.dkr.ecr.ap-south-1.amazonaws.com/eoan/sandbox-platform/oan-sandbox-web
+  imagePullSecrets: []
+
+# No Istio on QA: APISIX serves the host through a plain Ingress, with the wildcard certificate of the edge.
+virtualService:
+  enabled: false
+
+ingress:
+  enabled: true
+  className: apisix

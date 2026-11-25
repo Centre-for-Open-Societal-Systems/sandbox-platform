@@ -21,19 +21,29 @@
 // ecr-credential-provider with the instance role oan-services-dev-ecr-pull (the same
 // way a2c and grievance pull). That role needs pull access to eoan/sandbox-platform/*.
 //
+// staging (the staging branch, like oan_a2c_service's): the same Versions/Chart/Registry/Test
+// stages with helm/environments/staging/oan-sandbox.yaml, then its own API and web images
+// (the web image carries the staging host, so develop's cannot be promoted), tagged
+//                <chart version>-staging.<build number>, staging-<commit>, staging
+// and "staging → QA cluster (helm)": deployment/jenkins/deploy-cluster.sh installs release
+// oan-sandbox in namespace sandbox of the QA cluster (sandbox.qa.oanstaging.com) from the
+// oan-ci-deploy agent with credential oan-qa-kubeconfig (the jenkins-qa-deployer
+// ServiceAccount of oan-helm docs/qa-cluster.md). It never moves develop's tags.
+//
 // Builds start when a PR is merged into develop. The chart lives in this repository,
 // so a chart or values change is deployed like any other develop change; nothing
 // is pulled from oan-helm.
 //
 // Jenkins setup: the sandbox.platform GitHub Organization Folder (or a Pipeline
 // from SCM, branch develop); an agent with Docker and git, labelled `docker`,
-// `vpn-agent` or `vpn-agent2`. Only develop pushes images and deploys: other
+// `vpn-agent` or `vpn-agent2`. Only develop and staging push images and deploy: other
 // branches and PRs run Versions, Registry checks and Test. Credentials:
 //   aws-ecr-creds   AWS key for ECR: either kind "AWS Credentials" or
 //                   "Username with password" (access key id / secret access key);
 //                   permissions in deployment/jenkins/ecr-policy.json
 //   oan-services-dev-ssh  SSH username (ubuntu) + private key for the VM
 //                   (oan-services-dev.pem)
+//   oan-qa-kubeconfig  staging: kubeconfig file of jenkins-qa-deployer (the one a2c uses)
 //   ghcr-creds      only with PUSH_GHCR: username + PAT (write:packages)
 
 // Exposes AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY from the aws-ecr-creds credential,
@@ -89,12 +99,10 @@ pipeline {
     ECR_REPO_PREFIX    = 'eoan/sandbox-platform/oan-sandbox'
     GHCR_PREFIX        = 'ghcr.io/centre-for-open-societal-systems/oan-sandbox'
     CHART_DIR          = 'helm/oan-sandbox'
-    // The Ingress (class apisix), image repositories and config of the dev release.
-    VALUES_FILE        = 'helm/environments/dev/oan-sandbox.yaml'
-    SANDBOX_HOSTNAME   = 'sandbox.development.oanstaging.com'
+    // VALUES_FILE, SANDBOX_HOSTNAME and RELEASE depend on the branch: set in Versions
+    // (a variable declared here could not be changed there).
     SSH_HOST           = 'ec2-13-234-239-132.ap-south-1.compute.amazonaws.com'
     NAMESPACE          = 'sandbox'
-    RELEASE            = 'oan-sandbox-1-1794475648'
     // Helm in a container for the Chart stage: nothing to install on the agent.
     HELM = "docker run --rm -u 1000:1000 -e HOME=/tmp -v ${WORKSPACE}/helm:/helm:ro alpine/helm:3.16.3"
     // AWS CLI in a container: nothing to install on the agent.
@@ -108,6 +116,19 @@ pipeline {
       steps {
         script {
           env.COMMIT_TAG = sh(returnStdout: true, script: 'git rev-parse --short=12 HEAD').trim()
+          // staging: the QA cluster. Everything else (develop, PRs, other branches): dev.
+          env.STAGING = (env.BRANCH_NAME == 'staging').toString()
+          if (env.STAGING == 'true') {
+            env.DEPLOY_ENV       = 'staging'
+            env.SANDBOX_HOSTNAME = 'sandbox.qa.oanstaging.com'
+            env.RELEASE          = 'oan-sandbox'
+          } else {
+            env.DEPLOY_ENV       = 'dev'
+            env.SANDBOX_HOSTNAME = 'sandbox.development.oanstaging.com'
+            env.RELEASE          = 'oan-sandbox-1-1794475648'
+          }
+          // The Ingress (class apisix), image repositories and config of the release.
+          env.VALUES_FILE = "helm/environments/${env.DEPLOY_ENV}/oan-sandbox.yaml"
 
           def version = sh(returnStdout: true,
                            script: "sed -n 's/^version: *//p' \"$CHART_DIR/Chart.yaml\"").trim()
@@ -121,6 +142,17 @@ pipeline {
           env.TAG = version
           // Unique per build: what gets deployed, and what Rancher shows.
           env.IMAGE_TAG = "${version}-${env.BUILD_NUMBER}"
+          // staging images have tags of their own (their web image differs): staging-<commit>,
+          // <chart version>-staging.<build>, staging. The bare chart version stays develop's.
+          env.SOURCE_TAG = env.COMMIT_TAG
+          env.MOVING_TAG = 'develop'
+          env.DEPLOY_PREFIX = "${version}-"
+          if (env.STAGING == 'true') {
+            env.SOURCE_TAG = "staging-${env.COMMIT_TAG}"
+            env.MOVING_TAG = 'staging'
+            env.DEPLOY_PREFIX = "${version}-staging."
+            env.IMAGE_TAG = "${version}-staging.${env.BUILD_NUMBER}"
+          }
           if (!(env.IMAGE_TAG ==~ /[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}/)) {
             error("Image tag '${env.IMAGE_TAG}' is not a valid image tag")
           }
@@ -162,9 +194,12 @@ pipeline {
             '''
             // Build when this chart version or this commit is missing: a new develop
             // commit under the same chart version rebuilds and moves the version tag.
+            // staging checks only its own staging-<commit> tag.
             def pushed = sh(returnStatus: true, script: '''
+              tags="$TAG $SOURCE_TAG"
+              [ "$STAGING" = true ] && tags="$SOURCE_TAG"
               for repo in "$ECR_REPO_PREFIX-api" "$ECR_REPO_PREFIX-web"; do
-                for t in "$TAG" "$COMMIT_TAG"; do
+                for t in $tags; do
                   $AWS ecr describe-images --repository-name "$repo" --image-ids imageTag="$t" >/dev/null 2>&1 || exit 1
                 done
               done
@@ -210,26 +245,31 @@ pipeline {
       when {
         allOf {
           environment name: 'NEED_BUILD', value: 'true'
-          expression { env.BRANCH_NAME == null || env.BRANCH_NAME == 'develop' }
+          expression { env.BRANCH_NAME == null || env.BRANCH_NAME == 'develop' || env.BRANCH_NAME == 'staging' }
         }
       }
       steps {
         sh '''
-          api_latest="$ECR_REGISTRY/$ECR_REPO_PREFIX-api:develop"
-          web_latest="$ECR_REGISTRY/$ECR_REPO_PREFIX-web:develop"
-          api_commit="$ECR_REGISTRY/$ECR_REPO_PREFIX-api:$COMMIT_TAG"
-          web_commit="$ECR_REGISTRY/$ECR_REPO_PREFIX-web:$COMMIT_TAG"
+          api_latest="$ECR_REGISTRY/$ECR_REPO_PREFIX-api:$MOVING_TAG"
+          web_latest="$ECR_REGISTRY/$ECR_REPO_PREFIX-web:$MOVING_TAG"
+          api_commit="$ECR_REGISTRY/$ECR_REPO_PREFIX-api:$SOURCE_TAG"
+          web_commit="$ECR_REGISTRY/$ECR_REPO_PREFIX-web:$SOURCE_TAG"
           api_build="$ECR_REGISTRY/$ECR_REPO_PREFIX-api:$IMAGE_TAG"
           web_build="$ECR_REGISTRY/$ECR_REPO_PREFIX-web:$IMAGE_TAG"
-          docker build -f docker/sandbox-api/Dockerfile \
-            -t "$api_build" -t "$API_IMAGE" -t "$api_commit" -t "$api_latest" .
+          api_tags="$api_build $api_commit $api_latest"
+          web_tags="$web_build $web_commit $web_latest"
+          # The bare chart version (API_IMAGE / WEB_IMAGE) is develop's latest build of it only.
+          if [ "$STAGING" != true ]; then
+            api_tags="$api_tags $API_IMAGE"
+            web_tags="$web_tags $WEB_IMAGE"
+          fi
+          docker build -f docker/sandbox-api/Dockerfile $(printf -- '-t %s ' $api_tags) .
           # The browser API URL is built into the web image (one image per environment).
-          docker build -t "$web_build" -t "$WEB_IMAGE" -t "$web_commit" -t "$web_latest" \
+          docker build $(printf -- '-t %s ' $web_tags) \
             --build-arg NEXT_PUBLIC_API_BASE_URL="https://$SANDBOX_HOSTNAME/oan" \
             --build-arg NEXT_PUBLIC_DEFAULT_COUNTRY=ET \
             --build-arg NEXT_PUBLIC_SITE_NAME="Open Agri Net" ui
-          for image in "$api_build" "$API_IMAGE" "$api_commit" "$api_latest" \
-                       "$web_build" "$WEB_IMAGE" "$web_commit" "$web_latest"; do
+          for image in $api_tags $web_tags; do
             docker push "$image"
           done
         '''
@@ -316,6 +356,64 @@ pipeline {
               FORCE='$FORCE_DEPLOY' bash -s" < deployment/jenkins/deploy.sh
           '''
         } } }
+      }
+    }
+
+    // staging: the unique tag to deploy, resolved here because the deploy agent has no AWS
+    // access. As on develop: this build's tag, or after a skipped build the newest
+    // <chart version>-staging.<N> already on this commit's staging images.
+    stage('Deploy tag (staging)') {
+      when { branch 'staging' }
+      steps {
+        script { withAws {
+          env.DEPLOY_TAG = sh(returnStdout: true, script: '''
+            if [ "$NEED_BUILD" = true ]; then echo "$IMAGE_TAG"; exit 0; fi
+            found=$($AWS ecr describe-images --repository-name "$ECR_REPO_PREFIX-api" \
+                --image-ids imageTag="$SOURCE_TAG" --query 'imageDetails[0].imageTags' --output text \
+              | tr -d '\\r' | tr '\\t' '\\n' \
+              | awk -v p="$DEPLOY_PREFIX" 'index($0, p) == 1 { n = substr($0, length(p) + 1); if (n ~ /^[0-9]+$/) print n, $0 }' \
+              | sort -n | tail -n 1 | cut -d' ' -f2)
+            if [ -n "$found" ]; then echo "$found"; exit 0; fi
+            # Images pushed without such a tag get this run's (same manifest, no rebuild).
+            for c in api web; do
+              repo="$ECR_REPO_PREFIX-$c"
+              manifest=$($AWS ecr batch-get-image --repository-name "$repo" --image-ids imageTag="$SOURCE_TAG" \
+                --query 'images[0].imageManifest' --output text)
+              media_type=$($AWS ecr batch-get-image --repository-name "$repo" --image-ids imageTag="$SOURCE_TAG" \
+                --query 'images[0].imageManifestMediaType' --output text | tr -d '\\r')
+              $AWS ecr put-image --repository-name "$repo" --image-tag "$IMAGE_TAG" \
+                --image-manifest "$manifest" --image-manifest-media-type "$media_type" >/dev/null
+            done
+            echo "$IMAGE_TAG"
+          ''').trim().readLines().last()
+          echo "Deploying images tagged ${env.DEPLOY_TAG}"
+        } }
+      }
+    }
+
+    // staging -> release oan-sandbox on the QA cluster, from the VPN deploy agent (as a2c's
+    // "staging → QA cluster (helm)"). A failed health check only marks the build UNSTABLE.
+    stage('staging → QA cluster (helm)') {
+      when { beforeAgent true; branch 'staging' }
+      agent { label 'oan-ci-deploy' }   // VPN agent with helm and kubectl; must reach the QA API
+      options { timeout(time: 20, unit: 'MINUTES') }
+      steps {
+        checkout scm
+        withCredentials([file(credentialsId: 'oan-qa-kubeconfig', variable: 'KUBECONFIG')]) {
+          script {
+            int rc = sh(returnStatus: true, script: '''
+              API_IMAGE="$ECR_REGISTRY/$ECR_REPO_PREFIX-api:$DEPLOY_TAG" \
+              WEB_IMAGE="$ECR_REGISTRY/$ECR_REPO_PREFIX-web:$DEPLOY_TAG" \
+              HOST="$SANDBOX_HOSTNAME" FORCE="$FORCE_DEPLOY" \
+                bash deployment/jenkins/deploy-cluster.sh
+            ''')
+            if (rc == 2) {
+              unstable("Deployed, but https://${env.SANDBOX_HOSTNAME}/oan/health did not answer")
+            } else if (rc != 0) {
+              error("Staging deploy failed (exit ${rc})")
+            }
+          }
+        }
       }
     }
   }
