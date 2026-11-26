@@ -58,6 +58,54 @@ spec:
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
+      {{- with .Values.dbInit }}
+      {{- if .enabled }}
+      initContainers:
+        - name: db-init
+          image: {{ .image | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: HOME
+              value: /tmp
+            - name: PGHOST
+              value: {{ $config.db.host | quote }}
+            - name: PGPORT
+              value: {{ $config.db.port | quote }}
+            - name: PGUSER
+              value: {{ .adminUser | quote }}
+            - name: PGDATABASE
+              value: postgres
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .adminSecret | quote }}
+                  key: {{ .adminSecretKey | quote }}
+            - name: DB_NAME
+              value: {{ required "config.db.name is required" $config.db.name | quote }}
+            - name: DB_USER
+              value: {{ required "config.db.user is required" $config.db.user | quote }}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.secret.name | quote }}
+                  key: DB_PASSWORD
+          command:
+            - bash
+            - -ec
+            - |
+              for i in $(seq 60); do pg_isready -q && break; echo "waiting for $PGHOST:$PGPORT"; sleep 5; done
+              psql -v ON_ERROR_STOP=1 -v u="$DB_USER" -v p="$DB_PASSWORD" -v d="$DB_NAME" <<'SQL'
+              SELECT format('CREATE ROLE %I LOGIN', :'u') WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'u') \gexec
+              SELECT format('ALTER ROLE %I LOGIN PASSWORD %L', :'u', :'p') \gexec
+              SELECT format('CREATE DATABASE %I OWNER %I', :'d', :'u') WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'d') \gexec
+              SQL
+              echo "database $DB_NAME and role $DB_USER ready"
+      {{- end }}
+      {{- end }}
       containers:
         - name: api
           image: {{ include "oan.image" $component.image | quote }}

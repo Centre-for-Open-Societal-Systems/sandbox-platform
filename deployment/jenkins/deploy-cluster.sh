@@ -7,16 +7,58 @@
 #     NAMESPACE=sandbox RELEASE=oan-sandbox bash deployment/jenkins/deploy-cluster.sh
 #
 # Needs helm and kubectl on the agent, no AWS access: the node pulls from ECR with its own IAM role.
-# The Secret named by secret.name in $VALUES_FILE and the database must already exist.
+# With secret.create the chart generates the Secret named by secret.name (made here before the first
+# install, so an operator can add secret.operatorKeys to it); otherwise it must already exist. With
+# dbInit.enabled the API Pod creates its database, with the superuser Secret copied below.
 set -euo pipefail
 : "${KUBECONFIG:?KUBECONFIG is required (credential oan-qa-kubeconfig)}"
 : "${API_IMAGE:?}" "${WEB_IMAGE:?}" "${VALUES_FILE:?}" "${CHART_ID:?}" "${HOST:?}" "${NAMESPACE:?}" "${RELEASE:?}"
 CHART_DIR=${CHART_DIR:-helm/oan-sandbox}
 test -f "$VALUES_FILE" || { echo "Values file $VALUES_FILE is missing" >&2; exit 1; }
 
-secret=$(sed -n '/^secret:/,/^[^ ]/s/^  name: *//p' "$VALUES_FILE" | tr -d '"' | head -n 1)
+# A top-level key's direct child in $VALUES_FILE (no yq on the agent): value <block> <key>.
+value() { sed -n "/^$1:/,/^[^ #]/s/^  $2: *//p" "$VALUES_FILE" | sed 's/ *#.*//' | tr -d '"' | head -n 1; }
+IMAGES=(--set api.image.repository="${API_IMAGE%:*}" --set-string api.image.tag="${API_IMAGE##*:}"
+        --set web.image.repository="${WEB_IMAGE%:*}" --set-string web.image.tag="${WEB_IMAGE##*:}")
+
+# The PostgreSQL superuser password dbInit uses, copied from the frappe-common release
+# (as oan_a2c_service's deploy-helm-dev.sh does; jenkins-qa-deployer may read that one Secret).
+if [ "$(value dbInit enabled)" = true ]; then
+  admin_secret=$(value dbInit adminSecret); admin_secret=${admin_secret:-oan-frappe-common-db}
+  admin_key=$(value dbInit adminSecretKey); admin_key=${admin_key:-password}
+  kubectl -n "$NAMESPACE" create secret generic "$admin_secret" \
+    --from-literal="$admin_key=$(kubectl -n frappe-common get secret oan-frappe-common-db -o jsonpath='{.data.password}' | base64 -d)" \
+    --dry-run=client -o yaml | kubectl apply -f -
+fi
+
+secret=$(value secret name)
 if [ -n "$secret" ] && ! kubectl -n "$NAMESPACE" get secret "$secret" >/dev/null 2>&1; then
-  echo "Secret $secret is missing in namespace $NAMESPACE (DB_PASSWORD, JWT_*; see helm/oan-sandbox/values.yaml)." >&2
+  if [ "$(value secret create)" != true ]; then
+    echo "Secret $secret is missing in namespace $NAMESPACE (DB_PASSWORD, JWT_*; see helm/oan-sandbox/values.yaml)." >&2
+    exit 1
+  fi
+  # First install: the chart's Secret now, with Helm's ownership metadata so the release adopts it.
+  echo "Creating Secret $secret (generated keys) for release $RELEASE"
+  helm template "$RELEASE" "$CHART_DIR" --namespace "$NAMESPACE" -f "$VALUES_FILE" "${IMAGES[@]}" \
+    --show-only templates/secret.yaml | kubectl -n "$NAMESPACE" create -f -
+  kubectl -n "$NAMESPACE" label secret "$secret" app.kubernetes.io/managed-by=Helm --overwrite
+  kubectl -n "$NAMESPACE" annotate secret "$secret" meta.helm.sh/release-name="$RELEASE" \
+    meta.helm.sh/release-namespace="$NAMESPACE" --overwrite
+fi
+
+# Keys the chart cannot generate (secret.operatorKeys): stop before helm, the API would not start.
+missing=()
+for key in $(value secret operatorKeys | tr -d '[],'); do
+  if [ -z "$(kubectl -n "$NAMESPACE" get secret "$secret" -o "jsonpath={.data.$key}")" ]; then
+    missing+=("$key")
+  fi
+done
+if [ ${#missing[@]} -gt 0 ]; then
+  echo "Secret $secret in namespace $NAMESPACE lacks: ${missing[*]}" >&2
+  echo "Add them once (values from setup_partner_realm.py and the APISIX Admin API), then rerun:" >&2
+  printf '  kubectl -n %s patch secret %s --type merge -p '\''{"stringData":{' "$NAMESPACE" "$secret" >&2
+  sep=""; for key in "${missing[@]}"; do printf '%s"%s":"..."' "$sep" "$key" >&2; sep=","; done
+  printf '}}'\''\n' >&2
   exit 1
 fi
 
@@ -42,13 +84,12 @@ fi
 
 # The values file and the images only (no --reuse-values): the whole release is in Git.
 # 10m covers the API's start-up probe (5 min, including the database wait).
-if ! helm upgrade --install "$RELEASE" "$CHART_DIR" --namespace "$NAMESPACE" -f "$VALUES_FILE" \
-  --set api.image.repository="${API_IMAGE%:*}" --set-string api.image.tag="${API_IMAGE##*:}" \
-  --set web.image.repository="${WEB_IMAGE%:*}" --set-string web.image.tag="${WEB_IMAGE##*:}" \
+if ! helm upgrade --install "$RELEASE" "$CHART_DIR" --namespace "$NAMESPACE" -f "$VALUES_FILE" "${IMAGES[@]}" \
   ${ATOMIC[@]+"${ATOMIC[@]}"} --description "$want" --wait --timeout 10m; then
   echo "helm upgrade failed. Diagnostics:" >&2
   helm -n "$NAMESPACE" history "$RELEASE" --max 3 >&2 || true
   kubectl -n "$NAMESPACE" get pods -l app.kubernetes.io/instance="$RELEASE" -o wide >&2 || true
+  kubectl -n "$NAMESPACE" logs "deploy/$RELEASE-api" -c db-init --tail=50 >&2 || true
   for c in api web; do
     kubectl -n "$NAMESPACE" logs "deploy/$RELEASE-$c" --tail=100 >&2 || true
   done
