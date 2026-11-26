@@ -13,14 +13,17 @@
 # - Database sandbox_db_oan and LOGIN role sandbox on the shared PostgreSQL of release
 #   oan-frappe-common-db (dbInit), with the superuser password deploy-cluster.sh copies from frappe-common.
 #
-# Once, by hand on the QA cluster:
-# - oan-helm environments/qa/values/oan-namespace-guard.yaml applied with sandbox in frappe-common.allowFrom
-#   (oan-helm #281), or the NetworkPolicy drops the API's database connections.
-# - Keycloak realm partner on keycloak.qa.oanstaging.com with the clients of
-#   backend/scripts/keycloak/setup_partner_realm.py, and the keys only an operator has, added to the Secret:
-#     kubectl -n sandbox patch secret oan-sandbox-secrets --type merge -p '{"stringData":{
-#       "KEYCLOAK_LOGIN_CLIENT_SECRET":"...","KEYCLOAK_ADMIN_CLIENT_SECRET":"...","GATEWAY_ADMIN_TOKEN":"..."}}'
-#   deploy-cluster.sh stops before helm while one of them is missing.
+# Once, outside this repo: oan-helm environments/qa/values/oan-namespace-guard.yaml applied with sandbox in
+# frappe-common.allowFrom (oan-helm #281), or the NetworkPolicy drops the API's database connections.
+#
+# Like a2c, the first install needs no credential from another system: Keycloak and the APISIX sync are off
+# (local sign-in, API-key partner auth). To turn them on later:
+# 1. Keycloak realm partner on keycloak.qa.oanstaging.com with the clients of
+#    backend/scripts/keycloak/setup_partner_realm.py; add the keys only an operator has to the Secret:
+#      kubectl -n sandbox patch secret oan-sandbox-secrets --type merge -p '{"stringData":{
+#        "KEYCLOAK_LOGIN_CLIENT_SECRET":"...","KEYCLOAK_ADMIN_CLIENT_SECRET":"...","GATEWAY_ADMIN_TOKEN":"..."}}'
+# 2. Here: keycloak.enabled and participantAuth keycloak, gateway.sync/appSync enabled, partnerAuth oauth,
+#    and those three keys in secret.operatorKeys (deploy-cluster.sh then checks them before helm).
 
 global:
   hostname: sandbox.qa.oanstaging.com
@@ -42,26 +45,29 @@ config:
     sync:
       # oauth only reads the routes: GATEWAY_ADMIN_TOKEN in the Secret is the APISIX viewer key.
       # The Admin API admits by source IP: the API Pod comes from the RKE2 Pod CIDR (10.42.0.0/16).
-      enabled: true
+      # Off until GATEWAY_ADMIN_TOKEN is in the Secret.
+      enabled: false
       type: apisix
       adminUrl: http://apisix-admin.api6-gateway.svc.cluster.local:9180
+    # On with Keycloak (oauth needs it): app keys become Keycloak OAuth clients.
     appSync:
-      enabled: true
-    # Partners call with an app access token (client credentials), not the API key.
-    partnerAuth: oauth
+      enabled: false
+    # apikey until Keycloak is on; then oauth (partners call with an app access token).
+    partnerAuth: apikey
     tokenHeader: X-Partner-Token
     logIngest:
       enabled: false
     rateLimit:
       enabled: false
-  # Needs KEYCLOAK_LOGIN_CLIENT_SECRET (oan-sandbox-portal) and KEYCLOAK_ADMIN_CLIENT_SECRET
-  # (oan-sandbox-provisioner) in oan-sandbox-secrets: without the login secret the API refuses to start.
+  # Off until KEYCLOAK_LOGIN_CLIENT_SECRET (oan-sandbox-portal) and KEYCLOAK_ADMIN_CLIENT_SECRET
+  # (oan-sandbox-provisioner) are in oan-sandbox-secrets: with participantAuth keycloak and no login
+  # secret the API refuses to start.
   keycloak:
-    enabled: true
+    enabled: false
     url: https://keycloak.qa.oanstaging.com
     publicUrl: https://keycloak.qa.oanstaging.com
     realm: partner
-    participantAuth: keycloak
+    participantAuth: local
   partnerPortal:
     clientId: ""
   partnerManagement:
@@ -70,8 +76,9 @@ config:
 secret:
   name: oan-sandbox-secrets
   create: true
-  # Keys only an operator has (Keycloak, APISIX): deploy-cluster.sh stops before helm while one is missing.
-  operatorKeys: [KEYCLOAK_LOGIN_CLIENT_SECRET, KEYCLOAK_ADMIN_CLIENT_SECRET, GATEWAY_ADMIN_TOKEN]
+  # Keys only an operator has, checked by deploy-cluster.sh before helm. None while Keycloak and the
+  # APISIX sync are off; with them on: [KEYCLOAK_LOGIN_CLIENT_SECRET, KEYCLOAK_ADMIN_CLIENT_SECRET, GATEWAY_ADMIN_TOKEN]
+  operatorKeys: []
 
 dbInit:
   enabled: true
